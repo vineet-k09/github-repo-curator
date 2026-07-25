@@ -544,8 +544,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (filters.quick === 'hasDeployment' && !r.homepage) return false;
-      if (filters.quick === 'missingReadme' && r.has_readme === true) return false;
-      if (filters.quick === 'missingLicense' && r.has_license === true) return false;
+      if (filters.quick === 'missingReadme' && (r.has_readme === true || r.has_readme === 1)) return false;
+      if (filters.quick === 'missingLicense' && (r.has_license === true || r.has_license === 1)) return false;
 
       return true;
     });
@@ -575,16 +575,25 @@ document.addEventListener('DOMContentLoaded', () => {
       const filesCountText = (r.source_files !== null && r.source_files !== undefined) ? `${r.source_files}/${r.total_files} files` : '...';
       const metricsHtml = `<div class="metrics-inline"><span class="highlight">${commitCountText}</span> • <span>${filesCountText}</span></div>`;
 
-      let docsHtml = '';
-      const missing = [];
-      if (r.has_readme === false) missing.push('<span class="badge-missing">⚠️ No README</span>');
-      if (r.has_license === false) missing.push('<span class="badge-missing">⚠️ No License</span>');
+      const hasReadme = r.has_readme === true || r.has_readme === 1;
+      const hasLicense = r.has_license === true || r.has_license === 1;
+      const isPending = (r.has_readme === null || r.has_readme === undefined) && (r.has_license === null || r.has_license === undefined);
 
-      if (missing.length === 0) {
-        docsHtml = `<span class="badge-ok">✓ Complete</span>`;
+      let docsHtml = '';
+      if (isPending) {
+        docsHtml = `<span class="badge-loading">...</span>`;
       } else {
-        docsHtml = `<div class="missing-docs-list">${missing.join('')}</div>`;
+        const missing = [];
+        if (!hasReadme) missing.push('<span class="badge-missing">No README</span>');
+        if (!hasLicense) missing.push('<span class="badge-missing">No License</span>');
+
+        if (missing.length === 0) {
+          docsHtml = `<span class="badge-ok">✓ Complete</span>`;
+        } else {
+          docsHtml = `<div class="missing-docs-list">${missing.join('')}</div>`;
+        }
       }
+
 
       return `
         <tr>
