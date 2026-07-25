@@ -1,68 +1,56 @@
 # 🛠️ GitHub Repo Curator (`github-repo-curator`)
 
-> **User-agnostic, file-driven CLI toolkit to audit, filter, organize, and automate GitHub repository setup.**
+> **User-agnostic, interactive Web Dashboard & CLI toolkit to audit, filter, organize, and bulk-manage GitHub repositories.**
 
-`github-repo-curator` helps developers analyze their GitHub account, filter out clutter, and bulk-publish selected repositories with automated descriptions, topics, and initial `README.md` generation.
+`github-repo-curator` replaces manual command-line copy-pasting with a clean, interactive Web Dashboard where you can filter repositories by visibility (Public/Private), commit count, scale, or team size, multi-select targets, and perform bulk actions (Public/Private toggle, Edit Descriptions, Add Topics, Generate MIT License, Generate README.md, or Bulk Delete).
 
 ---
 
 ## ✨ Features
 
-- 🔍 **User-Agnostic Audit**: Audit any GitHub account (`--user <username>`) or your authenticated `gh` CLI profile.
-- 📊 **Smart Categorization**: Sorts repositories by size/scale, commit count (`< 5`, `5-20`, `> 20`), and team size (Solo vs Multi-contributor).
-- 📋 **File-Driven Workflow**: Uses `target_repos.txt` as a single source of truth so you only publish/modify what you choose.
-- 📋 **Clipboard Friendly**: Output raw repository lists (`--raw`) directly compatible with `wl-copy`, `xclip`, or text redirection.
-- 🚀 **Automated Setup & Publishing**: Converts selected private repos to `PUBLIC`, generates default descriptions, adds topics, and bootstraps initial `README.md` files via GitHub REST API.
+- 🖥️ **Interactive Web Dashboard**: Beautiful dark glassmorphism UI running locally (`http://localhost:8080`). Zero external npm/pip dependencies required!
+- 🔍 **Interactive Filters**:
+  - **Visibility**: All / Public 🌐 / Private 🔒
+  - **Commits**: All / `< 5 Commits` ⚡ / `5-20 Commits` 📦 / `> 20 Commits` 🔥
+  - **Scale**: All / Scaffolding 🏗️ / Small App 📄 / Full Application 🚀
+  - **Live Search**: Instant keyword search on repo names, languages, and descriptions.
+- ⚡ **Bulk Operations**:
+  - 🌐 **Set Visibility** (Public / Private)
+  - 📝 **Bulk Edit Descriptions**
+  - 🏷️ **Bulk Add Topics & Tags**
+  - 📜 **Generate MIT License** (`LICENSE`)
+  - 📄 **Generate Initial README** (`README.md`)
+  - 🗑️ **Bulk Repository Deletion** (with explicit text confirmation modal to prevent accidents).
+- 📜 **Real-Time Execution Logs**: Modal showing live step-by-step API responses and status for all operations.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Run Repository Audit
+### 1. Launch Interactive Web Dashboard
 ```bash
-# View interactive table summary of all your repositories
-make audit
+git clone https://github.com/vineet-k09/github-repo-curator.git
+cd github-repo-curator
 
-# Or audit another GitHub account
-python3 audit.py --user octocat
+# Launch the Web GUI
+make gui
 ```
-
-### 2. Extract Target Repositories
-```bash
-# Extract repos with < 5 commits directly to target_repos.txt
-make audit-5commits
-
-# Or output raw list for copying via clipboard
-python3 audit.py --raw | wl-copy
-```
-
-### 3. Bulk Publish & Setup Selected Repositories
-Edit `target_repos.txt` to keep only the repos you want to modify/publish, then run:
-```bash
-make setup-repos
-```
+Open **http://localhost:8080** in your browser!
 
 ---
 
-## 🛠️ Commands & Options
+### 2. Alternative CLI Workflow
 
-### `audit.py`
-| Argument | Description |
-| :--- | :--- |
-| `--user <username>` | GitHub username to audit (default: authenticated `gh` user) |
-| `--5commits` | Filter repositories with `< 5 commits` |
-| `--solo` | Filter solo-contributor repositories |
-| `--scale {scaffolding,small,full}` | Filter by scale category |
-| `--raw` | Output line-separated repo names only |
-| `-o <file>` | Output filtered repo names to specified file (e.g. `target_repos.txt`) |
-| `--json-out <file>` | Save detailed JSON audit report |
+```bash
+# View interactive ASCII table summary in terminal
+make audit
 
-### `setup_repos.py`
-| Argument | Description |
-| :--- | :--- |
-| `--user <username>` | GitHub username |
-| `-f <file>` | Source of truth file containing repo names (default: `target_repos.txt`) |
-| `--repo <name>` | Single repository target override |
+# Extract repos with < 5 commits directly to target_repos.txt
+make audit-5commits
+
+# Bulk publish and setup repos listed in target_repos.txt
+make setup-repos
+```
 
 ---
 

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GitHub Repo Curator — Interactive Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="logo-icon">⚡</div>
+        <div>
+          <h1>GitHub Repo Curator</h1>
+          <p class="subtitle">Bulk Audit & Management Workspace</p>
+        </div>
+      </div>
+      <div class="user-card" id="userCard">
+        <img id="userAvatar" src="https://github.com/github.png" alt="User Avatar" class="avatar" />
+        <div class="user-info">
+          <span id="userName" class="user-name">Loading...</span>
+          <span id="userLogin" class="user-handle">@username</span>
+        </div>
+        <button id="btnRefresh" class="btn-secondary btn-icon" title="Refresh Data">
+          🔄 Refresh
+        </button>
+      </div>
+    </header>
+
+    <!-- Stats Row -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon purple">📦</div>
+        <div>
+          <div class="stat-value" id="statTotal">0</div>
+          <div class="stat-label">Total Repositories</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon green">🌐</div>
+        <div>
+          <div class="stat-value" id="statPublic">0</div>
+          <div class="stat-label">Public</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon blue">🔒</div>
+        <div>
+          <div class="stat-value" id="statPrivate">0</div>
+          <div class="stat-label">Private</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon amber">⚡</div>
+        <div>
+          <div class="stat-value" id="statFewCommits">0</div>
+          <div class="stat-label">&lt; 5 Commits</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Content Panel -->
+    <main class="main-card">
+      <!-- Search & Filters Toolbar -->
+      <div class="filter-bar">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="Search by repo name, description, language..." />
+        </div>
+
+        <div class="filter-group">
+          <label>Visibility:</label>
+          <div class="pill-group" id="filterVisibility">
+            <button class="pill active" data-value="all">All</button>
+            <button class="pill" data-value="public">Public 🌐</button>
+            <button class="pill" data-value="private">Private 🔒</button>
+          </div>
+        </div>
+
+        <div class="filter-group">
+          <label>Commits:</label>
+          <div class="pill-group" id="filterCommits">
+            <button class="pill active" data-value="all">All</button>
+            <button class="pill" data-value="lt5">&lt; 5 Commits ⚡</button>
+            <button class="pill" data-value="5to20">5-20 Commits 📦</button>
+            <button class="pill" data-value="gt20">&gt; 20 Commits 🔥</button>
+          </div>
+        </div>
+
+        <div class="filter-group">
+          <label>Scale:</label>
+          <div class="pill-group" id="filterScale">
+            <button class="pill active" data-value="all">All</button>
+            <button class="pill" data-value="scaffolding">Scaffolding 🏗️</button>
+            <button class="pill" data-value="small">Small App 📄</button>
+            <button class="pill" data-value="full">Full App 🚀</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bulk Action Bar -->
+      <div class="bulk-action-bar hidden" id="bulkBar">
+        <div class="selected-count">
+          <span id="selectedBadge" class="badge badge-indigo">0 selected</span>
+        </div>
+        <div class="action-buttons">
+          <button id="btnMakePublic" class="btn-action green">🌐 Make Public</button>
+          <button id="btnMakePrivate" class="btn-action blue">🔒 Make Private</button>
+          <button id="btnSetDesc" class="btn-action purple">📝 Edit Description</button>
+          <button id="btnSetTopics" class="btn-action violet">🏷️ Add Topics</button>
+          <button id="btnAddLicense" class="btn-action amber">📜 Add MIT License</button>
+          <button id="btnAddReadme" class="btn-action cyan">📄 Add README.md</button>
+          <button id="btnDelete" class="btn-action red">🗑️ Delete Selected</button>
+        </div>
+      </div>
+
+      <!-- Repository Table -->
+      <div class="table-wrapper">
+        <table class="repo-table">
+          <thead>
+            <tr>
+              <th width="40"><input type="checkbox" id="selectAll" /></th>
+              <th>Repository Name</th>
+              <th>Visibility</th>
+              <th>Scale</th>
+              <th>Commits</th>
+              <th>Files</th>
+              <th>License / README</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody id="repoTableBody">
+            <tr>
+              <td colspan="8" class="text-center py-8">
+                <div class="spinner"></div>
+                <p>Auditing repositories...</p>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal: Edit Description -->
+  <div class="modal-backdrop hidden" id="modalDesc">
+    <div class="modal-card">
+      <h2>📝 Bulk Edit Description</h2>
+      <p class="modal-subtitle">Set description for selected repositories</p>
+      <div class="form-group">
+        <textarea id="descInput" rows="3" placeholder="Enter new repository description..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button id="btnCancelDesc" class="btn-secondary">Cancel</button>
+        <button id="btnSaveDesc" class="btn-primary">Apply Description</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Topics -->
+  <div class="modal-backdrop hidden" id="modalTopics">
+    <div class="modal-card">
+      <h2>🏷️ Bulk Add Topics</h2>
+      <p class="modal-subtitle">Comma-separated GitHub topic tags</p>
+      <div class="form-group">
+        <input type="text" id="topicsInput" placeholder="e.g. typescript, nextjs, devtools, python" />
+      </div>
+      <div class="modal-actions">
+        <button id="btnCancelTopics" class="btn-secondary">Cancel</button>
+        <button id="btnSaveTopics" class="btn-primary">Apply Topics</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Confirm Delete -->
+  <div class="modal-backdrop hidden" id="modalDelete">
+    <div class="modal-card modal-danger">
+      <h2>🗑️ Confirm Repository Deletion</h2>
+      <p class="modal-subtitle">Warning: This action is permanent and cannot be undone!</p>
+      <p class="delete-list-title">Selected Repositories to Delete:</p>
+      <ul id="deleteRepoList" class="delete-list"></ul>
+      <p class="text-sm mt-4">Type <strong id="deleteConfirmText">DELETE</strong> to confirm:</p>
+      <input type="text" id="deleteConfirmInput" placeholder="DELETE" />
+      <div class="modal-actions">
+        <button id="btnCancelDelete" class="btn-secondary">Cancel</button>
+        <button id="btnConfirmDelete" class="btn-danger" disabled>Permanently Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Action Log Output -->
+  <div class="modal-backdrop hidden" id="modalLogs">
+    <div class="modal-card modal-wide">
+      <h2>⚙️ Execution Progress Log</h2>
+      <div id="logOutput" class="log-console"></div>
+      <div class="modal-actions">
+        <button id="btnCloseLogs" class="btn-primary">Close Log</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
