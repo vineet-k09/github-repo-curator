@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GitHub Repo Curator - Web Application Server & SQLite Cache Engine
-Fast, parallel multi-threaded HTTP server with SQLite persistence, smart delta sync, and auto-polling support.
+Supports both GitHub CLI (`gh`) and direct GitHub REST API using Personal Access Tokens (PAT).
 """
 
 import base64
@@ -11,14 +11,18 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 DEFAULT_PORT = 8080
 MAX_PORT_ATTEMPTS = 20
 DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
+
+GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
 
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=20.0)
@@ -52,29 +56,58 @@ def init_db():
     conn.commit()
     conn.close()
 
-def run_gh(args):
+def run_github_api(endpoint, method='GET', payload=None, token=None):
+    auth_token = token or GITHUB_TOKEN
+
+    # If PAT token is provided or set, use direct HTTP request
+    if auth_token:
+        url = f"https://api.github.com{endpoint}" if endpoint.startswith('/') else endpoint
+        headers = {
+            "Authorization": f"Bearer {auth_token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "GitHub-Repo-Curator"
+        }
+        data_bytes = json.dumps(payload).encode('utf-8') if payload is not None else None
+        req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                if resp.status in (200, 201):
+                    return json.loads(resp.read().decode('utf-8'))
+                elif resp.status == 24:
+                    return {}
+                return {}
+        except Exception:
+            return None
+
+    # Fallback to gh CLI
     try:
-        res = subprocess.run(['gh', 'api'] + args, capture_output=True, text=True)
+        cmd = ['gh', 'api']
+        if method != 'GET':
+            cmd.extend(['-X', method])
+        cmd.append(endpoint)
+        
+        input_str = json.dumps(payload) if payload else None
+        res = subprocess.run(cmd, input=input_str, capture_output=True, text=True)
         if res.returncode == 0 and res.stdout.strip():
             return json.loads(res.stdout)
         return None
     except Exception:
         return None
 
-def get_authenticated_user():
-    return run_gh(['/user'])
+def get_authenticated_user(token=None):
+    return run_github_api('/user', token=token)
 
-def get_single_repo_details(owner, name):
+def get_single_repo_details(owner, name, token=None):
     full_name = f"{owner}/{name}"
     
-    tree_data = run_gh([f"/repos/{full_name}/git/trees/HEAD?recursive=1"])
+    tree_data = run_github_api(f"/repos/{full_name}/git/trees/HEAD?recursive=1", token=token)
     has_tree = tree_data and 'tree' in tree_data
     files = [f['path'] for f in tree_data['tree'] if f['type'] == 'blob'] if has_tree else []
     
     code_files = [f for f in files if not any(x in f for x in ['node_modules/', '.next/', 'vendor/', 'dist/', 'build/', '.git/'])]
     src_files = [f for f in code_files if f.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.cpp', '.c', '.html', '.css', '.gd', '.php', '.typ'))]
 
-    commits = run_gh([f"/repos/{full_name}/commits?per_page=30"])
+    commits = run_github_api(f"/repos/{full_name}/commits?per_page=30", token=token)
     commit_count = len(commits) if isinstance(commits, list) else 0
 
     has_readme = any('readme' in f.lower() for f in files)
@@ -112,9 +145,9 @@ def get_all_cached_repos():
         results.append(item)
     return results
 
-def deep_sync_single_repo(owner, name):
+def deep_sync_single_repo(owner, name, token=None):
     try:
-        details = get_single_repo_details(owner, name)
+        details = get_single_repo_details(owner, name, token=token)
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute('''
@@ -127,8 +160,8 @@ def deep_sync_single_repo(owner, name):
     except Exception as e:
         print(f"Deep sync error for {name}: {e}", file=sys.stderr)
 
-def sync_surface_repos(owner, force=False):
-    repos_raw = run_gh(['--paginate', '/user/repos?type=all&per_page=100']) or []
+def sync_surface_repos(owner, force=False, token=None):
+    repos_raw = run_github_api('/user/repos?type=all&per_page=100', token=token) or []
     owned = [r for r in repos_raw if r['owner']['login'].lower() == owner.lower()]
 
     conn = get_db()
@@ -151,12 +184,8 @@ def sync_surface_repos(owner, force=False):
         forks = r.get('forks_count', 0)
         pushed_at = (r.get('pushed_at') or r.get('pushedAt') or '')[:10]
         
-        # Proper REST API topics extraction
         raw_topics = r.get('topics') or []
-        if isinstance(raw_topics, list):
-            topics = raw_topics
-        else:
-            topics = []
+        topics = raw_topics if isinstance(raw_topics, list) else []
         topics_json = json.dumps(topics)
         now_str = time.strftime('%Y-%m-%d %H:%M:%S')
 
@@ -191,34 +220,41 @@ def sync_surface_repos(owner, force=False):
     conn.commit()
     conn.close()
 
-    # Parallel multi-threaded deep enrichment
     if to_deep_sync:
         executor = ThreadPoolExecutor(max_workers=8)
         for o, n in to_deep_sync:
-            executor.submit(deep_sync_single_repo, o, n)
+            executor.submit(deep_sync_single_repo, o, n, token)
 
 class CuratorAPIHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=os.path.join(os.path.dirname(__file__), 'web'), **kwargs)
 
+    def get_req_token(self):
+        auth_hdr = self.headers.get('Authorization')
+        if auth_hdr and auth_hdr.startswith('Bearer '):
+            return auth_hdr.split(' ')[1].strip()
+        return GITHUB_TOKEN
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        token = self.get_req_token()
 
         if path == '/api/user':
-            self.send_json_response(get_authenticated_user() or {})
+            user = get_authenticated_user(token=token)
+            self.send_json_response(user or {})
 
         elif path == '/api/repos':
-            user = get_authenticated_user()
+            user = get_authenticated_user(token=token)
             if not user or 'login' not in user:
-                self.send_json_response({'error': 'Unauthorized'}, status=401)
+                self.send_json_response({'error': 'Unauthorized. Please provide a GitHub Personal Access Token or log in with gh CLI.'}, status=401)
                 return
             
             owner = user['login']
             cached = get_all_cached_repos()
 
             if not cached:
-                sync_surface_repos(owner, force=True)
+                sync_surface_repos(owner, force=True, token=token)
                 cached = get_all_cached_repos()
 
             self.send_json_response({'owner': owner, 'repos': cached})
@@ -229,10 +265,11 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        token = self.get_req_token()
         length = int(self.headers.get('Content-Length', 0))
         body = json.loads(self.rfile.read(length).decode('utf-8')) if length > 0 else {}
 
-        user = get_authenticated_user()
+        user = get_authenticated_user(token=token)
         if not user or 'login' not in user:
             self.send_json_response({'error': 'Unauthorized'}, status=401)
             return
@@ -243,7 +280,7 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
         cursor = conn.cursor()
 
         if path == '/api/refresh':
-            sync_surface_repos(owner, force=body.get('force', False))
+            sync_surface_repos(owner, force=body.get('force', False), token=token)
             cached = get_all_cached_repos()
             conn.close()
             self.send_json_response({'owner': owner, 'repos': cached, 'message': 'Smart sync completed.'})
@@ -253,40 +290,38 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
             vis = body.get('visibility', 'public').lower()
             vis_upper = vis.upper()
             is_priv = 1 if vis == 'private' else 0
+            is_private_bool = (vis == 'private')
             for repo in repos:
                 full_name = f"{owner}/{repo}"
-                try:
-                    subprocess.run(['gh', 'repo', 'edit', full_name, '--visibility', vis, '--accept-visibility-change-consequences'], capture_output=True, text=True, check=True)
+                res = run_github_api(f"/repos/{full_name}", method='PATCH', payload={'private': is_private_bool}, token=token)
+                if res is not None:
                     cursor.execute('UPDATE repo_cache SET visibility=?, is_private=? WHERE name=?', (vis_upper, is_priv, repo))
                     logs.append({'repo': repo, 'status': 'success', 'message': f'Visibility set to {vis_upper}'})
-                except subprocess.CalledProcessError as e:
-                    logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
+                else:
+                    logs.append({'repo': repo, 'status': 'error', 'message': f'Failed to update visibility for {repo}'})
 
         elif path == '/api/actions/description':
             desc = body.get('description', '')
             for repo in repos:
                 full_name = f"{owner}/{repo}"
-                try:
-                    subprocess.run(['gh', 'repo', 'edit', full_name, '--description', desc], capture_output=True, text=True, check=True)
+                res = run_github_api(f"/repos/{full_name}", method='PATCH', payload={'description': desc}, token=token)
+                if res is not None:
                     cursor.execute('UPDATE repo_cache SET description=? WHERE name=?', (desc, repo))
                     logs.append({'repo': repo, 'status': 'success', 'message': 'Description updated.'})
-                except subprocess.CalledProcessError as e:
-                    logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
+                else:
+                    logs.append({'repo': repo, 'status': 'error', 'message': f'Failed to update description for {repo}'})
 
         elif path == '/api/actions/topics':
             topics = body.get('topics', [])
             topics_json = json.dumps(topics)
             for repo in repos:
                 full_name = f"{owner}/{repo}"
-                try:
-                    cmd = ['gh', 'repo', 'edit', full_name]
-                    for t in topics:
-                        cmd.extend(['--add-topic', t])
-                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                res = run_github_api(f"/repos/{full_name}/topics", method='PUT', payload={'names': topics}, token=token)
+                if res is not None:
                     cursor.execute('UPDATE repo_cache SET topics=? WHERE name=?', (topics_json, repo))
                     logs.append({'repo': repo, 'status': 'success', 'message': f'Topics added: {topics}'})
-                except subprocess.CalledProcessError as e:
-                    logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
+                else:
+                    logs.append({'repo': repo, 'status': 'error', 'message': f'Failed to update topics for {repo}'})
 
         elif path == '/api/actions/license':
             mit_content = f"""MIT License
@@ -314,13 +349,13 @@ SOFTWARE.
             encoded = base64.b64encode(mit_content.encode('utf-8')).decode('utf-8')
             for repo in repos:
                 full_name = f"{owner}/{repo}"
-                payload = json.dumps({"message": "docs: add MIT LICENSE", "content": encoded})
-                try:
-                    subprocess.run(['gh', 'api', '-X', 'PUT', f'/repos/{full_name}/contents/LICENSE', '--input', '-'], input=payload, text=True, capture_output=True, check=True)
+                payload = {"message": "docs: add MIT LICENSE", "content": encoded}
+                res = run_github_api(f"/repos/{full_name}/contents/LICENSE", method='PUT', payload=payload, token=token)
+                if res is not None:
                     cursor.execute('UPDATE repo_cache SET has_license=1 WHERE name=?', (repo,))
                     logs.append({'repo': repo, 'status': 'success', 'message': 'Created MIT LICENSE'})
-                except subprocess.CalledProcessError as e:
-                    logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
+                else:
+                    logs.append({'repo': repo, 'status': 'error', 'message': f'Failed to create LICENSE for {repo}'})
 
         elif path == '/api/actions/readme':
             for repo in repos:
@@ -339,13 +374,13 @@ cd {repo}
 This project is licensed under the MIT License.
 """
                 encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
-                payload = json.dumps({"message": "docs: add initial README.md", "content": encoded})
-                try:
-                    subprocess.run(['gh', 'api', '-X', 'PUT', f'/repos/{full_name}/contents/README.md', '--input', '-'], input=payload, text=True, capture_output=True, check=True)
+                payload = {"message": "docs: add initial README.md", "content": encoded}
+                res = run_github_api(f"/repos/{full_name}/contents/README.md", method='PUT', payload=payload, token=token)
+                if res is not None:
                     cursor.execute('UPDATE repo_cache SET has_readme=1 WHERE name=?', (repo,))
                     logs.append({'repo': repo, 'status': 'success', 'message': 'Created README.md'})
-                except subprocess.CalledProcessError as e:
-                    logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
+                else:
+                    logs.append({'repo': repo, 'status': 'error', 'message': f'Failed to create README for {repo}'})
 
         elif path == '/api/actions/delete':
             confirm = body.get('confirm', False)
@@ -356,12 +391,9 @@ This project is licensed under the MIT License.
             
             for repo in repos:
                 full_name = f"{owner}/{repo}"
-                try:
-                    subprocess.run(['gh', 'repo', 'delete', full_name, '--yes'], capture_output=True, text=True, check=True)
-                    cursor.execute('DELETE FROM repo_cache WHERE name=?', (repo,))
-                    logs.append({'repo': repo, 'status': 'success', 'message': f'Deleted repository {full_name}'})
-                except subprocess.CalledProcessError as e:
-                    logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
+                res = run_github_api(f"/repos/{full_name}", method='DELETE', token=token)
+                cursor.execute('DELETE FROM repo_cache WHERE name=?', (repo,))
+                logs.append({'repo': repo, 'status': 'success', 'message': f'Deleted repository {full_name}'})
 
         conn.commit()
         conn.close()

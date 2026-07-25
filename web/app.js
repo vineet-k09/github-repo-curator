@@ -296,7 +296,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Subsecondary metadata row: 1. Date first (4 Jan 24), 2. Link second, 3. Topics third
       const formattedDate = formatDate(r.pushed_at);
-      const dateHtml = formattedDate ? `<span class="date-tag">📅 ${formattedDate}</span>` : '';
+      const dateHtml = formattedDate ? `<span class="date-tag">${formattedDate}</span>` : '';
       const deployHtml = r.homepage ? `<a href="${r.homepage}" target="_blank" class="deploy-link">🔗 ${r.homepage}</a>` : '';
       
       const topicList = Array.isArray(r.topics) ? r.topics : [];
@@ -310,8 +310,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // 2-line Docs Status (showing ONLY missing items)
       let docsHtml = '';
       const missing = [];
-      if (r.has_readme === false) missing.push('<span class="badge-missing">⚠️ No README</span>');
-      if (r.has_license === false) missing.push('<span class="badge-missing">⚠️ No License</span>');
+      if (r.has_readme === false) missing.push('<span class="badge-missing">No README</span>');
+      if (r.has_license === false) missing.push('<span class="badge-missing">No License</span>');
 
       if (missing.length === 0) {
         docsHtml = `<span class="badge-ok">✓ Complete</span>`;
