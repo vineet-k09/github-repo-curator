@@ -1,6 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
   let allRepos = [];
-  let repoDetailsCache = new Map();
   let selectedRepos = new Set();
   
   let filters = {
@@ -63,7 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchRepos();
 
   // Listeners
-  btnRefresh.addEventListener('click', () => { fetchUser(); fetchRepos(); });
+  btnRefresh.addEventListener('click', () => { refreshRepos(false); });
 
   searchInput.addEventListener('input', (e) => {
     filters.search = e.target.value.toLowerCase();
@@ -158,6 +157,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function formatDate(dateStr) {
+    if (!dateStr) return '';
+    try {
+      const d = new Date(dateStr);
+      return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
+    } catch (e) {
+      return dateStr;
+    }
+  }
+
   async function fetchUser() {
     try {
       const res = await fetch('/api/user');
@@ -173,90 +182,67 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function fetchRepos() {
-    repoTableBody.innerHTML = `
-      <tr><td colspan="6" class="text-center py-8">
-        <p style="text-align:center; padding: 20px; color:#9ca3af;">Loading repositories...</p>
-      </td></tr>`;
-
     try {
       const res = await fetch('/api/repos');
       const data = await res.json();
       allRepos = data.repos || [];
       updateStats();
       renderTable();
-      
-      // Background progressive fetch for details
-      fetchProgressiveDetails();
     } catch (e) {
-      repoTableBody.innerHTML = `<tr><td colspan="6" style="color:#ef4444; text-align:center; padding: 20px;">Failed to load repositories.</td></tr>`;
+      repoTableBody.innerHTML = `<tr><td colspan="6" style="color:#ef4444; text-align:center; padding: 20px;">Failed to load cached repositories.</td></tr>`;
     }
   }
 
-  async function fetchProgressiveDetails() {
-    for (const r of allRepos) {
-      if (repoDetailsCache.has(r.name)) {
-        Object.assign(r, repoDetailsCache.get(r.name));
-      } else {
-        try {
-          const res = await fetch(`/api/repo-details?repo=${r.name}`);
-          if (res.ok) {
-            const details = await res.json();
-            repoDetailsCache.set(r.name, details);
-            Object.assign(r, details);
-            // Re-render row metrics dynamically
-            updateRowMetrics(r.name);
-          }
-        } catch (e) {}
-      }
+  async function refreshRepos(force = false) {
+    btnRefresh.textContent = '⏳ Syncing...';
+    btnRefresh.disabled = true;
+
+    try {
+      const res = await fetch('/api/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force })
+      });
+      const data = await res.json();
+      allRepos = data.repos || [];
+      updateStats();
+      renderTable();
+    } catch (e) {
+      console.error('Smart sync failed', e);
+    } finally {
+      btnRefresh.textContent = '🔄 Smart Sync';
+      btnRefresh.disabled = false;
     }
   }
 
-  function updateRowMetrics(repoName) {
-    const r = allRepos.find(item => item.name === repoName);
-    if (!r) return;
-    
-    const commitEl = document.getElementById(`commits-${r.name}`);
-    if (commitEl && r.commit_count !== null) {
-      commitEl.className = 'badge badge-amber';
-      commitEl.textContent = `${r.commit_count} commits`;
-    }
-
-    const filesEl = document.getElementById(`files-${r.name}`);
-    if (filesEl && r.source_files !== null) {
-      filesEl.innerHTML = `<span title="${r.source_files} source files out of ${r.total_files} total workspace files">${r.source_files} / ${r.total_files} files</span>`;
-    }
-
-    const docsEl = document.getElementById(`docs-${r.name}`);
-    if (docsEl && r.has_readme !== null) {
-      docsEl.innerHTML = `
-        <span style="color:${r.has_license ? '#34d399' : '#9ca3af'}">📜 ${r.has_license ? 'Yes' : 'No'}</span> | 
-        <span style="color:${r.has_readme ? '#34d399' : '#9ca3af'}">📄 ${r.has_readme ? 'Yes' : 'No'}</span>
-      `;
-    }
+  function isPrivateRepo(r) {
+    return r.is_private === true || (r.visibility && r.visibility.toUpperCase() === 'PRIVATE');
   }
 
   function updateStats() {
     statTotal.textContent = allRepos.length;
-    statPublic.textContent = allRepos.filter(r => r.visibility === 'PUBLIC').length;
-    statPrivate.textContent = allRepos.filter(r => r.visibility === 'PRIVATE').length;
+    statPublic.textContent = allRepos.filter(r => !isPrivateRepo(r)).length;
+    statPrivate.textContent = allRepos.filter(r => isPrivateRepo(r)).length;
     statDeployments.textContent = allRepos.filter(r => Boolean(r.homepage)).length;
   }
 
   function getFilteredRepos() {
     return allRepos.filter(r => {
+      const priv = isPrivateRepo(r);
+
       if (filters.search) {
         const q = filters.search;
         const matchName = r.name.toLowerCase().includes(q);
-        const matchDesc = r.description.toLowerCase().includes(q);
-        const matchLang = r.language.toLowerCase().includes(q);
+        const matchDesc = (r.description || '').toLowerCase().includes(q);
+        const matchLang = (r.language || '').toLowerCase().includes(q);
         const matchTopics = (r.topics || []).some(t => t.toLowerCase().includes(q));
         if (!matchName && !matchDesc && !matchLang && !matchTopics) return false;
       }
 
-      if (filters.visibility === 'public' && r.visibility !== 'PUBLIC') return false;
-      if (filters.visibility === 'private' && r.visibility !== 'PRIVATE') return false;
+      if (filters.visibility === 'public' && priv) return false;
+      if (filters.visibility === 'private' && !priv) return false;
 
-      if (r.commit_count !== null) {
+      if (r.commit_count !== null && r.commit_count !== undefined) {
         if (filters.commits === 'lt5' && r.commit_count >= 5) return false;
         if (filters.commits === '5to20' && (r.commit_count < 5 || r.commit_count > 20)) return false;
         if (filters.commits === 'gt20' && r.commit_count <= 20) return false;
@@ -279,55 +265,58 @@ document.addEventListener('DOMContentLoaded', () => {
 
     repoTableBody.innerHTML = repos.map(r => {
       const isChecked = selectedRepos.has(r.name);
-      const visClass = r.visibility === 'PUBLIC' ? 'badge-public' : 'badge-private';
-      const topicsHtml = (r.topics || []).map(t => `<span class="topic-tag">#${t}</span>`).join('');
+      const priv = isPrivateRepo(r);
+      const visText = priv ? 'PRIVATE' : 'PUBLIC';
+      const visClass = priv ? 'badge-private' : 'badge-public';
+
+      // Metadata Subsecondary Row (Date first, Link second, Topics third)
+      const formattedDate = formatDate(r.pushed_at);
+      const dateHtml = formattedDate ? `<span class="date-tag">📅 ${formattedDate}</span>` : '';
       const deployHtml = r.homepage ? `<a href="${r.homepage}" target="_blank" class="deploy-link">🔗 ${r.homepage}</a>` : '';
-      const dateHtml = r.pushed_at ? `<span class="date-tag">📅 ${r.pushed_at}</span>` : '';
+      const topicsHtml = (r.topics || []).map(t => `<span class="topic-tag">#${t}</span>`).join('');
 
-      const commitBadge = r.commit_count !== null 
-        ? `<span id="commits-${r.name}" class="badge badge-amber">${r.commit_count} commits</span>`
-        : `<span id="commits-${r.name}" class="badge badge-gray">...</span>`;
+      // Single line metrics pill
+      const commitCountText = (r.commit_count !== null && r.commit_count !== undefined) ? `${r.commit_count} commits` : '...';
+      const filesCountText = (r.source_files !== null && r.source_files !== undefined) ? `${r.source_files}/${r.total_files} files` : '...';
+      const metricsHtml = `<div class="metrics-inline"><span class="highlight">${commitCountText}</span> • <span>${filesCountText}</span></div>`;
 
-      const filesInfo = r.source_files !== null
-        ? `<span id="files-${r.name}" style="color:#9ca3af" title="${r.source_files} source files out of ${r.total_files} workspace files">${r.source_files} / ${r.total_files} files</span>`
-        : `<span id="files-${r.name}" style="color:#9ca3af">...</span>`;
+      // 2-line Docs Status (showing ONLY missing items)
+      let docsHtml = '';
+      const missing = [];
+      if (r.has_readme === false) missing.push('<span class="badge-missing">⚠️ No README</span>');
+      if (r.has_license === false) missing.push('<span class="badge-missing">⚠️ No License</span>');
 
-      const docsInfo = r.has_readme !== null
-        ? `<span id="docs-${r.name}"><span style="color:${r.has_license ? '#34d399' : '#9ca3af'}">📜 ${r.has_license ? 'Yes' : 'No'}</span> | <span style="color:${r.has_readme ? '#34d399' : '#9ca3af'}">📄 ${r.has_readme ? 'Yes' : 'No'}</span></span>`
-        : `<span id="docs-${r.name}"><span style="color:${r.has_license ? '#34d399' : '#9ca3af'}">📜 ${r.has_license ? 'Yes' : 'No'}</span> | <span style="color:#9ca3af">📄 ...</span></span>`;
+      if (missing.length === 0) {
+        docsHtml = `<span class="badge-ok">✓ Complete</span>`;
+      } else {
+        docsHtml = `<div class="missing-docs-list">${missing.join('')}</div>`;
+      }
 
       return `
         <tr>
           <td><input type="checkbox" class="repo-select" data-name="${r.name}" ${isChecked ? 'checked' : ''} /></td>
           <td>
             <div class="repo-main-info">
-              <div class="repo-title-wrapper">
-                <a href="https://github.com/${r.full_name}" target="_blank" class="repo-title">${r.name}</a>
-              </div>
+              <a href="https://github.com/${r.full_name}" target="_blank" class="repo-title">${r.name}</a>
               <div class="subsecondary-row">
                 <div class="repo-desc">${r.description || '<em>No description provided</em>'}</div>
                 <div class="meta-pills">
+                  ${dateHtml}
                   ${deployHtml}
                   ${topicsHtml}
-                  ${dateHtml}
                 </div>
               </div>
             </div>
           </td>
-          <td><span class="badge ${visClass}">${r.visibility}</span></td>
+          <td><span class="badge ${visClass}">${visText}</span></td>
           <td><span class="badge badge-lang">${r.language}</span></td>
-          <td>
-            <div style="display:flex; flex-direction:column; gap:4px;">
-              ${commitBadge}
-              ${filesInfo}
-            </div>
-          </td>
-          <td>${docsInfo}</td>
+          <td>${metricsHtml}</td>
+          <td>${docsHtml}</td>
         </tr>
       `;
     }).join('');
 
-    // Attach row select listeners
+    // Checkbox Listeners
     document.querySelectorAll('.repo-select').forEach(cb => {
       cb.addEventListener('change', (e) => {
         const name = e.target.dataset.name;

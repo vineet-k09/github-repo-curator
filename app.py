@@ -1,20 +1,56 @@
 #!/usr/bin/env python3
 """
-GitHub Repo Curator - Web Application Server
-Zero-dependency Python HTTP Server & REST API with progressive loading and automatic port fallback.
+GitHub Repo Curator - Web Application Server & SQLite Cache Engine
+Fast, non-blocking HTTP server with SQLite persistence and smart delta sync.
 """
 
 import base64
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
+import threading
+import time
 import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 DEFAULT_PORT = 8080
 MAX_PORT_ATTEMPTS = 20
+DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS repo_cache (
+            name TEXT PRIMARY KEY,
+            full_name TEXT NOT NULL,
+            description TEXT,
+            visibility TEXT,
+            is_private INTEGER,
+            language TEXT,
+            homepage TEXT,
+            stargazers_count INTEGER,
+            forks_count INTEGER,
+            pushed_at TEXT,
+            topics TEXT,
+            has_readme INTEGER,
+            has_license INTEGER,
+            commit_count INTEGER,
+            source_files INTEGER,
+            total_files INTEGER,
+            last_synced TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
 def run_gh(args):
     try:
@@ -31,7 +67,6 @@ def get_authenticated_user():
 def get_single_repo_details(owner, name):
     full_name = f"{owner}/{name}"
     
-    # 1. Tree check
     tree_data = run_gh([f"/repos/{full_name}/git/trees/HEAD?recursive=1"])
     has_tree = tree_data and 'tree' in tree_data
     files = [f['path'] for f in tree_data['tree'] if f['type'] == 'blob'] if has_tree else []
@@ -39,7 +74,6 @@ def get_single_repo_details(owner, name):
     code_files = [f for f in files if not any(x in f for x in ['node_modules/', '.next/', 'vendor/', 'dist/', 'build/', '.git/'])]
     src_files = [f for f in code_files if f.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.cpp', '.c', '.html', '.css', '.gd', '.php', '.typ'))]
 
-    # 2. Commits check
     commits = run_gh([f"/repos/{full_name}/commits?per_page=30"])
     commit_count = len(commits) if isinstance(commits, list) else 0
 
@@ -47,15 +81,111 @@ def get_single_repo_details(owner, name):
     has_license = any('license' in f.lower() for f in files)
 
     return {
-        'name': name,
-        'full_name': full_name,
         'total_files': len(files),
         'code_files': len(code_files),
         'source_files': len(src_files),
         'commit_count': commit_count,
-        'has_readme': has_readme,
-        'has_license': has_license
+        'has_readme': 1 if has_readme else 0,
+        'has_license': 1 if has_license else 0
     }
+
+def get_all_cached_repos():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM repo_cache ORDER BY pushed_at DESC')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    results = []
+    for r in rows:
+        item = dict(r)
+        item['is_private'] = bool(item['is_private'])
+        item['has_readme'] = bool(item['has_readme']) if item['has_readme'] is not None else None
+        item['has_license'] = bool(item['has_license']) if item['has_license'] is not None else None
+        try:
+            item['topics'] = json.loads(item['topics']) if item['topics'] else []
+        except Exception:
+            item['topics'] = []
+        results.append(item)
+    return results
+
+def sync_surface_repos(owner):
+    repos_raw = run_gh(['--paginate', '/user/repos?type=all&per_page=100']) or []
+    owned = [r for r in repos_raw if r['owner']['login'].lower() == owner.lower()]
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    existing = {r['name']: dict(r) for r in cursor.execute('SELECT name, pushed_at, commit_count FROM repo_cache').fetchall()}
+    current_names = set()
+    to_deep_sync = []
+
+    for r in owned:
+        name = r['name']
+        current_names.add(name)
+        full_name = r['full_name']
+        description = r.get('description') or ''
+        is_private = 1 if r.get('private') else 0
+        visibility = (r.get('visibility') or ('PRIVATE' if is_private else 'PUBLIC')).upper()
+        language = (r.get('primaryLanguage') or {}).get('name') or r.get('language') or 'N/A'
+        homepage = r.get('homepageUrl') or r.get('homepage') or ''
+        stargazers = r.get('stargazers_count', 0)
+        forks = r.get('forks_count', 0)
+        pushed_at = (r.get('pushed_at') or r.get('pushedAt') or '')[:10]
+        topics = [t['name'] for t in (r.get('repositoryTopics') or [])] if isinstance(r.get('repositoryTopics'), list) else []
+        topics_json = json.dumps(topics)
+        now_str = time.strftime('%Y-%m-%d %H:%M:%S')
+
+        cached = existing.get(name)
+        needs_deep = not cached or cached.get('pushed_at') != pushed_at or cached.get('commit_count') is None
+        if needs_deep:
+            to_deep_sync.append((owner, name))
+
+        cursor.execute('''
+            INSERT INTO repo_cache (
+                name, full_name, description, visibility, is_private, language, homepage,
+                stargazers_count, forks_count, pushed_at, topics, last_synced
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                full_name=excluded.full_name,
+                description=excluded.description,
+                visibility=excluded.visibility,
+                is_private=excluded.is_private,
+                language=excluded.language,
+                homepage=excluded.homepage,
+                stargazers_count=excluded.stargazers_count,
+                forks_count=excluded.forks_count,
+                pushed_at=excluded.pushed_at,
+                topics=excluded.topics,
+                last_synced=excluded.last_synced
+        ''', (name, full_name, description, visibility, is_private, language, homepage, stargazers, forks, pushed_at, topics_json, now_str))
+
+    for old_name in list(existing.keys()):
+        if old_name not in current_names:
+            cursor.execute('DELETE FROM repo_cache WHERE name=?', (old_name,))
+
+    conn.commit()
+    conn.close()
+
+    # Deep detail enrichment in background thread
+    if to_deep_sync:
+        threading.Thread(target=background_deep_sync, args=(to_deep_sync,), daemon=True).start()
+
+def background_deep_sync(targets):
+    conn = get_db()
+    cursor = conn.cursor()
+    for owner, name in targets:
+        try:
+            details = get_single_repo_details(owner, name)
+            cursor.execute('''
+                UPDATE repo_cache SET
+                    has_readme=?, has_license=?, commit_count=?, source_files=?, total_files=?
+                WHERE name=?
+            ''', (details['has_readme'], details['has_license'], details['commit_count'], details['source_files'], details['total_files'], name))
+            conn.commit()
+        except Exception:
+            pass
+    conn.close()
 
 class CuratorAPIHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -64,7 +194,6 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        query = urllib.parse.parse_qs(parsed.query)
 
         if path == '/api/user':
             self.send_json_response(get_authenticated_user() or {})
@@ -76,44 +205,14 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
                 return
             
             owner = user['login']
-            # Using /user/repos?type=all to fetch ALL public AND private repos owned by user
-            repos_raw = run_gh(['--paginate', '/user/repos?type=all&per_page=100']) or []
-            owned = [r for r in repos_raw if r['owner']['login'].lower() == owner.lower()]
+            cached = get_all_cached_repos()
 
-            # Instant metadata load without blocking sub-requests
-            results = []
-            for r in owned:
-                topics = [t['name'] for t in (r.get('repositoryTopics') or [])] if isinstance(r.get('repositoryTopics'), list) else []
-                results.append({
-                    'name': r['name'],
-                    'full_name': r['full_name'],
-                    'description': r.get('description') or '',
-                    'visibility': r.get('visibility') or ('PRIVATE' if r.get('private') else 'PUBLIC'),
-                    'is_private': r.get('private', False),
-                    'language': (r.get('primaryLanguage') or {}).get('name') or r.get('language') or 'N/A',
-                    'homepage': r.get('homepageUrl') or r.get('homepage') or '',
-                    'stargazers_count': r.get('stargazers_count', 0),
-                    'forks_count': r.get('forks_count', 0),
-                    'pushed_at': (r.get('pushed_at') or r.get('pushedAt') or '')[:10],
-                    'topics': topics,
-                    'has_readme': None,  # Computed on demand/progressive load
-                    'has_license': bool(r.get('license')),
-                    'commit_count': None,
-                    'source_files': None,
-                    'total_files': None
-                })
+            # Fast surface sync on initial start if empty
+            if not cached:
+                sync_surface_repos(owner)
+                cached = get_all_cached_repos()
 
-            self.send_json_response({'owner': owner, 'repos': results})
-
-        elif path == '/api/repo-details':
-            repo_name = query.get('repo', [None])[0]
-            user = get_authenticated_user()
-            if not repo_name or not user:
-                self.send_json_response({'error': 'Missing repo parameter'}, status=400)
-                return
-            
-            details = get_single_repo_details(user['login'], repo_name)
-            self.send_json_response(details)
+            self.send_json_response({'owner': owner, 'repos': cached})
 
         else:
             super().do_GET()
@@ -131,14 +230,26 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
         owner = user['login']
         repos = body.get('repos', [])
         logs = []
+        conn = get_db()
+        cursor = conn.cursor()
 
-        if path == '/api/actions/visibility':
-            vis = body.get('visibility', 'public')
+        if path == '/api/refresh':
+            sync_surface_repos(owner)
+            cached = get_all_cached_repos()
+            conn.close()
+            self.send_json_response({'owner': owner, 'repos': cached, 'message': 'Smart sync completed.'})
+            return
+
+        elif path == '/api/actions/visibility':
+            vis = body.get('visibility', 'public').lower()
+            vis_upper = vis.upper()
+            is_priv = 1 if vis == 'private' else 0
             for repo in repos:
                 full_name = f"{owner}/{repo}"
                 try:
                     subprocess.run(['gh', 'repo', 'edit', full_name, '--visibility', vis, '--accept-visibility-change-consequences'], capture_output=True, text=True, check=True)
-                    logs.append({'repo': repo, 'status': 'success', 'message': f'Visibility set to {vis.upper()}'})
+                    cursor.execute('UPDATE repo_cache SET visibility=?, is_private=? WHERE name=?', (vis_upper, is_priv, repo))
+                    logs.append({'repo': repo, 'status': 'success', 'message': f'Visibility set to {vis_upper}'})
                 except subprocess.CalledProcessError as e:
                     logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
 
@@ -148,12 +259,14 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
                 full_name = f"{owner}/{repo}"
                 try:
                     subprocess.run(['gh', 'repo', 'edit', full_name, '--description', desc], capture_output=True, text=True, check=True)
-                    logs.append({'repo': repo, 'status': 'success', 'message': f'Description updated.'})
+                    cursor.execute('UPDATE repo_cache SET description=? WHERE name=?', (desc, repo))
+                    logs.append({'repo': repo, 'status': 'success', 'message': 'Description updated.'})
                 except subprocess.CalledProcessError as e:
                     logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
 
         elif path == '/api/actions/topics':
             topics = body.get('topics', [])
+            topics_json = json.dumps(topics)
             for repo in repos:
                 full_name = f"{owner}/{repo}"
                 try:
@@ -161,6 +274,7 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
                     for t in topics:
                         cmd.extend(['--add-topic', t])
                     subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    cursor.execute('UPDATE repo_cache SET topics=? WHERE name=?', (topics_json, repo))
                     logs.append({'repo': repo, 'status': 'success', 'message': f'Topics added: {topics}'})
                 except subprocess.CalledProcessError as e:
                     logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
@@ -194,6 +308,7 @@ SOFTWARE.
                 payload = json.dumps({"message": "docs: add MIT LICENSE", "content": encoded})
                 try:
                     subprocess.run(['gh', 'api', '-X', 'PUT', f'/repos/{full_name}/contents/LICENSE', '--input', '-'], input=payload, text=True, capture_output=True, check=True)
+                    cursor.execute('UPDATE repo_cache SET has_license=1 WHERE name=?', (repo,))
                     logs.append({'repo': repo, 'status': 'success', 'message': 'Created MIT LICENSE'})
                 except subprocess.CalledProcessError as e:
                     logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
@@ -218,6 +333,7 @@ This project is licensed under the MIT License.
                 payload = json.dumps({"message": "docs: add initial README.md", "content": encoded})
                 try:
                     subprocess.run(['gh', 'api', '-X', 'PUT', f'/repos/{full_name}/contents/README.md', '--input', '-'], input=payload, text=True, capture_output=True, check=True)
+                    cursor.execute('UPDATE repo_cache SET has_readme=1 WHERE name=?', (repo,))
                     logs.append({'repo': repo, 'status': 'success', 'message': 'Created README.md'})
                 except subprocess.CalledProcessError as e:
                     logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
@@ -226,16 +342,20 @@ This project is licensed under the MIT License.
             confirm = body.get('confirm', False)
             if not confirm:
                 self.send_json_response({'error': 'Deletion requires explicit confirmation flag.'}, status=400)
+                conn.close()
                 return
             
             for repo in repos:
                 full_name = f"{owner}/{repo}"
                 try:
-                    res = subprocess.run(['gh', 'repo', 'delete', full_name, '--yes'], capture_output=True, text=True, check=True)
+                    subprocess.run(['gh', 'repo', 'delete', full_name, '--yes'], capture_output=True, text=True, check=True)
+                    cursor.execute('DELETE FROM repo_cache WHERE name=?', (repo,))
                     logs.append({'repo': repo, 'status': 'success', 'message': f'Deleted repository {full_name}'})
                 except subprocess.CalledProcessError as e:
                     logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
 
+        conn.commit()
+        conn.close()
         self.send_json_response({'logs': logs})
 
     def send_json_response(self, data, status=200):
@@ -258,6 +378,7 @@ def find_available_port(start_port, max_attempts=MAX_PORT_ATTEMPTS):
     return None
 
 def main():
+    init_db()
     port = find_available_port(DEFAULT_PORT)
     if not port:
         print(f"❌ Error: Could not find an open port starting from {DEFAULT_PORT}.", file=sys.stderr)

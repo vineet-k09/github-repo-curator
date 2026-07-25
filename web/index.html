@@ -17,7 +17,7 @@
         <div class="logo-icon">⚡</div>
         <div>
           <h1>GitHub Repo Curator</h1>
-          <p class="subtitle">Interactive Bulk Management Dashboard</p>
+          <p class="subtitle">SQLite-Cached Dashboard & Delta Sync</p>
         </div>
       </div>
       <div class="user-card" id="userCard">
@@ -26,8 +26,8 @@
           <span id="userName" class="user-name">Loading...</span>
           <span id="userLogin" class="user-handle">@username</span>
         </div>
-        <button id="btnRefresh" class="btn-secondary btn-icon" title="Refresh Repositories">
-          🔄 Refresh
+        <button id="btnRefresh" class="btn-secondary btn-icon" title="Smart Delta Refresh">
+          🔄 Smart Sync
         </button>
       </div>
     </header>
@@ -97,8 +97,8 @@
           <div class="pill-group" id="filterQuick">
             <button class="pill active" data-value="all">All</button>
             <button class="pill" data-value="hasDeployment">Deployed 🚀</button>
-            <button class="pill" data-value="missingReadme">Missing README 📄</button>
-            <button class="pill" data-value="missingLicense">Missing License 📜</button>
+            <button class="pill" data-value="missingReadme">No README 📄</button>
+            <button class="pill" data-value="missingLicense">No License 📜</button>
           </div>
         </div>
       </div>
@@ -124,19 +124,18 @@
         <table class="repo-table">
           <thead>
             <tr>
-              <th width="40"><input type="checkbox" id="selectAll" /></th>
+              <th width="36"><input type="checkbox" id="selectAll" /></th>
               <th>Repository & Details</th>
-              <th width="120">Visibility</th>
-              <th width="120">Language</th>
-              <th width="120">Metrics</th>
-              <th width="140">Docs & License</th>
+              <th width="95">Visibility</th>
+              <th width="95">Language</th>
+              <th width="180">Metrics</th>
+              <th width="120">Docs Status</th>
             </tr>
           </thead>
           <tbody id="repoTableBody">
             <tr>
               <td colspan="6" class="text-center py-8">
-                <div class="spinner"></div>
-                <p style="text-align:center; padding: 20px; color:#9ca3af;">Loading repositories...</p>
+                <p style="text-align:center; padding: 20px; color:#9ca3af;">Loading cached repositories...</p>
               </td>
             </tr>
           </tbody>

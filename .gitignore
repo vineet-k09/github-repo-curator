@@ -1,0 +1,9 @@
+node_modules/
+.next/
+dist/
+build/
+*.db
+cache.db
+target_repos.txt
+repo_audit_summary.json
+__pycache__/
