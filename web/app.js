@@ -75,7 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const token = getToken();
     if (!token) throw new Error('No GitHub token provided');
 
-    const url = endpoint.startswith('http') ? endpoint : `https://api.github.com${endpoint}`;
+    const url = endpoint.startsWith('http') ? endpoint : `https://api.github.com${endpoint}`;
     const headers = {
       'Authorization': `Bearer ${token.trim()}`,
       'Accept': 'application/vnd.github+json',
@@ -96,10 +96,6 @@ document.addEventListener('DOMContentLoaded', () => {
     return res.json();
   }
 
-  // Helper string method check
-  if (!String.prototype.startswith) {
-    String.prototype.startswith = function(prefix) { return self.indexOf(prefix) === 0; };
-  }
 
   // 2. Initialization
   init();
