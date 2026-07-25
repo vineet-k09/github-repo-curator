@@ -1,8 +1,13 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const STORAGE_KEY_REPOS = 'gh_curator_repos_v2';
+  const STORAGE_KEY_USER = 'gh_curator_user_v2';
+  const STORAGE_KEY_PAT = 'gh_pat';
+
   let allRepos = [];
+  let currentUser = null;
   let selectedRepos = new Set();
-  let pollTimer = null;
-  
+  let syncInProgress = false;
+
   let filters = {
     search: '',
     visibility: 'all',
@@ -52,7 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const logOutput = document.getElementById('logOutput');
   const btnCloseLogs = document.getElementById('btnCloseLogs');
 
-  // Bulk action buttons
+  // Bulk buttons
   const btnMakePublic = document.getElementById('btnMakePublic');
   const btnMakePrivate = document.getElementById('btnMakePrivate');
   const btnSetDesc = document.getElementById('btnSetDesc');
@@ -61,32 +66,355 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnAddReadme = document.getElementById('btnAddReadme');
   const btnDelete = document.getElementById('btnDelete');
 
-  // Headers helper
-  function getAuthHeaders() {
-    const headers = {};
-    const storedPat = localStorage.getItem('gh_pat');
-    if (storedPat) {
-      headers['Authorization'] = `Bearer ${storedPat.trim()}`;
-    }
-    return headers;
+  // 1. Direct GitHub REST API & Local Token Helper
+  function getToken() {
+    return localStorage.getItem(STORAGE_KEY_PAT) || '';
   }
 
-  // Initialization
-  fetchUser();
-  fetchRepos();
+  async function ghFetch(endpoint, options = {}) {
+    const token = getToken();
+    if (!token) throw new Error('No GitHub token provided');
 
-  // Listeners
-  btnRefresh.addEventListener('click', () => { refreshRepos(true); });
+    const url = endpoint.startswith('http') ? endpoint : `https://api.github.com${endpoint}`;
+    const headers = {
+      'Authorization': `Bearer ${token.trim()}`,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'GitHub-Repo-Curator-Client',
+      ...(options.headers || {})
+    };
 
+    const res = await fetch(url, { ...options, headers });
+    if (res.status === 401) {
+      authCard.classList.remove('hidden');
+      throw new Error('Unauthorized');
+    }
+    if (res.status === 204) return {};
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // Helper string method check
+  if (!String.prototype.startswith) {
+    String.prototype.startswith = function(prefix) { return self.indexOf(prefix) === 0; };
+  }
+
+  // 2. Initialization
+  init();
+
+  async function init() {
+    loadCachedUser();
+    loadCachedRepos();
+
+    if (getToken()) {
+      authCard.classList.add('hidden');
+      syncUserData();
+      smartSyncRepos(false);
+    } else {
+      // Check if backend Python server can provide user (local gh CLI fallback)
+      try {
+        const res = await fetch('/api/user');
+        if (res.ok) {
+          const user = await res.json();
+          if (user.login) {
+            authCard.classList.add('hidden');
+            currentUser = user;
+            updateUserUI();
+            fetchReposFromBackend();
+            return;
+          }
+        }
+      } catch (e) {}
+      authCard.classList.remove('hidden');
+    }
+  }
+
+  // 3. User & Cache Management
+  function loadCachedUser() {
+    const raw = localStorage.getItem(STORAGE_KEY_USER);
+    if (raw) {
+      try {
+        currentUser = JSON.parse(raw);
+        updateUserUI();
+      } catch (e) {}
+    }
+  }
+
+  function updateUserUI() {
+    if (!currentUser) return;
+    userAvatar.src = currentUser.avatar_url || 'https://github.com/github.png';
+    userName.textContent = currentUser.name || currentUser.login;
+    userLogin.textContent = `@${currentUser.login}`;
+  }
+
+  async function syncUserData() {
+    try {
+      const user = await ghFetch('/user');
+      currentUser = user;
+      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
+      updateUserUI();
+    } catch (e) {
+      console.error('Failed to sync user', e);
+    }
+  }
+
+  function loadCachedRepos() {
+    const raw = localStorage.getItem(STORAGE_KEY_REPOS);
+    if (raw) {
+      try {
+        allRepos = JSON.parse(raw);
+        updateStats();
+        renderTable();
+      } catch (e) {}
+    }
+  }
+
+  function saveCachedRepos() {
+    localStorage.setItem(STORAGE_KEY_REPOS, JSON.stringify(allRepos));
+  }
+
+  // 4. Smart Delta Sync Engine (Client-Side & LocalStorage)
+  async function smartSyncRepos(force = false) {
+    if (syncInProgress) return;
+    syncInProgress = true;
+    btnRefresh.textContent = '⏳ Syncing...';
+    btnRefresh.disabled = true;
+
+    try {
+      // Fetch all surface repos owned by authenticated user
+      let reposRaw = [];
+      let page = 1;
+      while (true) {
+        const pageData = await ghFetch(`/user/repos?type=all&per_page=100&page=${page}`);
+        if (!Array.isArray(pageData) || pageData.length === 0) break;
+        reposRaw.push(...pageData);
+        if (pageData.length < 100) break;
+        page++;
+      }
+
+      if (!currentUser) await syncUserData();
+      const owner = currentUser ? currentUser.login.toLowerCase() : '';
+      const owned = reposRaw.filter(r => r.owner && r.owner.login.toLowerCase() === owner);
+
+      const existingMap = new Map(allRepos.map(r => [r.name, r]));
+      const newRepos = [];
+      const toDeepFetch = [];
+
+      for (const r of owned) {
+        const name = r.name;
+        const pushed_at = (r.pushed_at || r.pushedAt || '').substring(0, 10);
+        const cached = existingMap.get(name);
+
+        const is_private = Boolean(r.private);
+        const visibility = (r.visibility || (is_private ? 'PRIVATE' : 'PUBLIC')).toUpperCase();
+        const language = (r.primaryLanguage && r.primaryLanguage.name) || r.language || 'N/A';
+        const homepage = r.homepage || r.homepageUrl || '';
+        const topics = Array.isArray(r.topics) ? r.topics : [];
+
+        const baseObj = {
+          name: name,
+          full_name: r.full_name,
+          description: r.description || '',
+          visibility: visibility,
+          is_private: is_private,
+          language: language,
+          homepage: homepage,
+          stargazers_count: r.stargazers_count || 0,
+          forks_count: r.forks_count || 0,
+          pushed_at: pushed_at,
+          topics: topics,
+          // Preserved or computed deep metrics
+          commit_count: cached ? cached.commit_count : null,
+          source_files: cached ? cached.source_files : null,
+          total_files: cached ? cached.total_files : null,
+          has_readme: cached ? cached.has_readme : null,
+          has_license: Boolean(r.license) || (cached ? cached.has_license : null)
+        };
+
+        const needsDeep = force || !cached || cached.pushed_at !== pushed_at || cached.commit_count === null;
+        if (needsDeep) {
+          toDeepFetch.push(baseObj);
+        }
+        newRepos.push(baseObj);
+      }
+
+      allRepos = newRepos;
+      saveCachedRepos();
+      updateStats();
+      renderTable();
+
+      // Parallel background deep enrichment
+      if (toDeepFetch.length > 0) {
+        enrichDeepMetricsParallel(toDeepFetch);
+      }
+
+    } catch (e) {
+      console.error('Smart sync error', e);
+    } finally {
+      btnRefresh.textContent = '🔄 Smart Sync';
+      btnRefresh.disabled = false;
+      syncInProgress = false;
+    }
+  }
+
+  // Parallel enrichment (concurrency limit 6)
+  async function enrichDeepMetricsParallel(targets) {
+    const CONCURRENCY = 6;
+    let index = 0;
+
+    async function worker() {
+      while (index < targets.length) {
+        const item = targets[index++];
+        try {
+          // Fetch tree
+          const treeData = await ghFetch(`/repos/${item.full_name}/git/trees/HEAD?recursive=1`).catch(() => null);
+          const files = (treeData && Array.isArray(treeData.tree)) 
+            ? treeData.tree.filter(f => f.type === 'blob').map(f => f.path) 
+            : [];
+          
+          const codeFiles = files.filter(f => !['node_modules/', '.next/', 'vendor/', 'dist/', 'build/', '.git/'].some(x => f.includes(x)));
+          const srcFiles = codeFiles.filter(f => ['.py','.js','.ts','.tsx','.jsx','.java','.go','.rs','.cpp','.c','.html','.css','.gd','.php','.typ'].some(ext => f.endswith(ext)));
+
+          // Fetch commits
+          const commits = await ghFetch(`/repos/${item.full_name}/commits?per_page=30`).catch(() => []);
+          const commitCount = Array.isArray(commits) ? commits.length : 0;
+
+          item.total_files = files.length;
+          item.source_files = srcFiles.length;
+          item.commit_count = commitCount;
+          item.has_readme = files.some(f => f.toLowerCase().includes('readme'));
+          item.has_license = files.some(f => f.toLowerCase().includes('license')) || item.has_license;
+
+          saveCachedRepos();
+          renderTable();
+        } catch (e) {}
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(CONCURRENCY, targets.length) }, () => worker());
+    await Promise.all(workers);
+  }
+
+  // Backend Fallback (Local gh CLI mode)
+  async function fetchReposFromBackend() {
+    try {
+      const res = await fetch('/api/repos');
+      const data = await res.json();
+      allRepos = data.repos || [];
+      saveCachedRepos();
+      updateStats();
+      renderTable();
+    } catch (e) {}
+  }
+
+  // 5. Action Execution (Direct Client API + Local Cache Persistence)
+  async function executeAction(endpoint, payload) {
+    logOutput.innerHTML = `<div class="log-entry">⏳ Executing action on ${payload.repos.length} repositories...</div>`;
+    modalLogs.classList.remove('hidden');
+
+    const actionType = endpoint.split('/').pop();
+    const logs = [];
+
+    for (const repoName of payload.repos) {
+      const target = allRepos.find(r => r.name === repoName);
+      if (!target) continue;
+      const fullName = target.full_name;
+
+      try {
+        if (actionType === 'visibility') {
+          const isPriv = payload.visibility === 'private';
+          await ghFetch(`/repos/${fullName}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ private: isPriv })
+          });
+          target.visibility = isPriv ? 'PRIVATE' : 'PUBLIC';
+          target.is_private = isPriv;
+          logs.push({ repo: repoName, status: 'success', message: `Visibility set to ${target.visibility}` });
+
+        } else if (actionType === 'description') {
+          await ghFetch(`/repos/${fullName}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ description: payload.description })
+          });
+          target.description = payload.description;
+          logs.push({ repo: repoName, status: 'success', message: 'Description updated.' });
+
+        } else if (actionType === 'topics') {
+          await ghFetch(`/repos/${fullName}/topics`, {
+            method: 'PUT',
+            body: JSON.stringify({ names: payload.topics })
+          });
+          target.topics = payload.topics;
+          logs.push({ repo: repoName, status: 'success', message: `Topics updated: #${payload.topics.join(', #')}` });
+
+        } else if (actionType === 'license') {
+          const content = btoa(`MIT License\n\nCopyright (c) 2026 ${currentUser ? currentUser.name || currentUser.login : ''}\n\nPermission is hereby granted, free of charge...`);
+          await ghFetch(`/repos/${fullName}/contents/LICENSE`, {
+            method: 'PUT',
+            body: JSON.stringify({ message: 'docs: add MIT LICENSE', content })
+          });
+          target.has_license = true;
+          logs.push({ repo: repoName, status: 'success', message: 'Created MIT LICENSE' });
+
+        } else if (actionType === 'readme') {
+          const content = btoa(`# ${repoName}\n\nOpen-source repository.\n`);
+          await ghFetch(`/repos/${fullName}/contents/README.md`, {
+            method: 'PUT',
+            body: JSON.stringify({ message: 'docs: add initial README.md', content })
+          });
+          target.has_readme = true;
+          logs.push({ repo: repoName, status: 'success', message: 'Created README.md' });
+
+        } else if (actionType === 'delete') {
+          await ghFetch(`/repos/${fullName}`, { method: 'DELETE' });
+          allRepos = allRepos.filter(r => r.name !== repoName);
+          logs.push({ repo: repoName, status: 'success', message: `Deleted repository ${fullName}` });
+        }
+
+      } catch (err) {
+        // Fallback to backend API endpoint if direct call fails
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const data = await res.json();
+          if (data.logs) logs.push(...data.logs);
+        } catch (e2) {
+          logs.push({ repo: repoName, status: 'error', message: err.message });
+        }
+      }
+    }
+
+    saveCachedRepos();
+    updateStats();
+    renderTable();
+
+    logOutput.innerHTML = logs.map(l => `
+      <div class="log-entry ${l.status}">
+        <span>${l.status === 'success' ? '✅' : '❌'}</span>
+        <strong>${l.repo}:</strong> ${l.message}
+      </div>
+    `).join('');
+
+    selectedRepos.clear();
+    updateSelectionUI();
+  }
+
+  // 6. UI & Filter Handlers
   btnSavePat.addEventListener('click', () => {
     const token = patInput.value.trim();
     if (token) {
-      localStorage.setItem('gh_pat', token);
+      localStorage.setItem(STORAGE_KEY_PAT, token);
       authCard.classList.add('hidden');
-      fetchUser();
-      fetchRepos();
+      init();
     }
   });
+
+  btnRefresh.addEventListener('click', () => { smartSyncRepos(true); });
 
   searchInput.addEventListener('input', (e) => {
     filters.search = e.target.value.toLowerCase();
@@ -100,16 +428,12 @@ document.addEventListener('DOMContentLoaded', () => {
   selectAll.addEventListener('change', (e) => {
     const isChecked = e.target.checked;
     const visibleRepos = getFilteredRepos();
-    if (isChecked) {
-      visibleRepos.forEach(r => selectedRepos.add(r.name));
-    } else {
-      visibleRepos.forEach(r => selectedRepos.delete(r.name));
-    }
+    if (isChecked) visibleRepos.forEach(r => selectedRepos.add(r.name));
+    else visibleRepos.forEach(r => selectedRepos.delete(r.name));
     updateSelectionUI();
     renderTable();
   });
 
-  // Modal Handlers
   btnSetDesc.addEventListener('click', () => { modalDesc.classList.remove('hidden'); });
   btnCancelDesc.addEventListener('click', () => { modalDesc.classList.add('hidden'); });
   btnSaveDesc.addEventListener('click', () => {
@@ -145,7 +469,6 @@ document.addEventListener('DOMContentLoaded', () => {
     executeAction('/api/actions/readme', { repos: Array.from(selectedRepos) });
   });
 
-  // Delete Handlers
   btnDelete.addEventListener('click', () => {
     deleteRepoList.innerHTML = Array.from(selectedRepos).map(r => `<li>${r}</li>`).join('');
     deleteConfirmInput.value = '';
@@ -166,10 +489,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   btnCloseLogs.addEventListener('click', () => {
     modalLogs.classList.add('hidden');
-    fetchRepos();
   });
 
-  // Helper Functions
   function setupPillGroup(groupId, callback) {
     const container = document.getElementById(groupId);
     container.addEventListener('click', (e) => {
@@ -189,89 +510,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
     } catch (e) {
       return dateStr;
-    }
-  }
-
-  async function fetchUser() {
-    try {
-      const res = await fetch('/api/user', { headers: getAuthHeaders() });
-      if (res.status === 401) {
-        authCard.classList.remove('hidden');
-        userName.textContent = 'Unauthenticated';
-        userLogin.textContent = '@none';
-        return;
-      }
-      const user = await res.json();
-      if (user.login) {
-        authCard.classList.add('hidden');
-        userAvatar.src = user.avatar_url || 'https://github.com/github.png';
-        userName.textContent = user.name || user.login;
-        userLogin.textContent = `@${user.login}`;
-      }
-    } catch (e) {
-      console.error('Failed to fetch user', e);
-    }
-  }
-
-  async function fetchRepos() {
-    try {
-      const res = await fetch('/api/repos', { headers: getAuthHeaders() });
-      if (res.status === 401) {
-        authCard.classList.remove('hidden');
-        repoTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#9ca3af; padding: 24px;">Please connect your GitHub account using the guide above.</td></tr>`;
-        return;
-      }
-      const data = await res.json();
-      allRepos = data.repos || [];
-      updateStats();
-      renderTable();
-      
-      checkAndAutoPoll();
-    } catch (e) {
-      repoTableBody.innerHTML = `<tr><td colspan="6" style="color:#ef4444; text-align:center; padding: 20px;">Failed to load cached repositories.</td></tr>`;
-    }
-  }
-
-  function checkAndAutoPoll() {
-    const needsSync = allRepos.some(r => r.commit_count === null || r.commit_count === undefined);
-    if (needsSync && !pollTimer) {
-      pollTimer = setInterval(async () => {
-        const res = await fetch('/api/repos', { headers: getAuthHeaders() });
-        const data = await res.json();
-        allRepos = data.repos || [];
-        updateStats();
-        renderTable();
-
-        const stillSyncing = allRepos.some(r => r.commit_count === null || r.commit_count === undefined);
-        if (!stillSyncing) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-        }
-      }, 1500);
-    }
-  }
-
-  async function refreshRepos(force = true) {
-    btnRefresh.textContent = '⏳ Syncing...';
-    btnRefresh.disabled = true;
-
-    try {
-      const res = await fetch('/api/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ force })
-      });
-      const data = await res.json();
-      allRepos = data.repos || [];
-      updateStats();
-      renderTable();
-
-      checkAndAutoPoll();
-    } catch (e) {
-      console.error('Smart sync failed', e);
-    } finally {
-      btnRefresh.textContent = '🔄 Smart Sync';
-      btnRefresh.disabled = false;
     }
   }
 
@@ -390,38 +628,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateSelectionUI() {
     const count = selectedRepos.size;
     selectedBadge.textContent = `${count} selected`;
-    if (count > 0) {
-      bulkBar.classList.remove('hidden');
-    } else {
-      bulkBar.classList.add('hidden');
-    }
-  }
-
-  async function executeAction(endpoint, payload) {
-    logOutput.innerHTML = `<div class="log-entry">⏳ Initiating action for ${payload.repos.length} repositories...</div>`;
-    modalLogs.classList.remove('hidden');
-
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      
-      const logs = data.logs || [];
-      logOutput.innerHTML = logs.map(l => `
-        <div class="log-entry ${l.status}">
-          <span>${l.status === 'success' ? '✅' : '❌'}</span>
-          <strong>${l.repo}:</strong> ${l.message}
-        </div>
-      `).join('');
-
-      selectedRepos.clear();
-      updateSelectionUI();
-
-    } catch (e) {
-      logOutput.innerHTML = `<div class="log-entry error">❌ Server error during action execution.</div>`;
-    }
+    if (count > 0) bulkBar.classList.remove('hidden');
+    else bulkBar.classList.add('hidden');
   }
 });
