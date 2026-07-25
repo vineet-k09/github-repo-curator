@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   let allRepos = [];
   let selectedRepos = new Set();
+  let pollTimer = null;
   
   let filters = {
     search: '',
@@ -62,7 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchRepos();
 
   // Listeners
-  btnRefresh.addEventListener('click', () => { refreshRepos(false); });
+  btnRefresh.addEventListener('click', () => { refreshRepos(true); });
 
   searchInput.addEventListener('input', (e) => {
     filters.search = e.target.value.toLowerCase();
@@ -161,6 +162,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!dateStr) return '';
     try {
       const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
       return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' });
     } catch (e) {
       return dateStr;
@@ -188,12 +190,33 @@ document.addEventListener('DOMContentLoaded', () => {
       allRepos = data.repos || [];
       updateStats();
       renderTable();
+      
+      checkAndAutoPoll();
     } catch (e) {
       repoTableBody.innerHTML = `<tr><td colspan="6" style="color:#ef4444; text-align:center; padding: 20px;">Failed to load cached repositories.</td></tr>`;
     }
   }
 
-  async function refreshRepos(force = false) {
+  function checkAndAutoPoll() {
+    const needsSync = allRepos.some(r => r.commit_count === null || r.commit_count === undefined);
+    if (needsSync && !pollTimer) {
+      pollTimer = setInterval(async () => {
+        const res = await fetch('/api/repos');
+        const data = await res.json();
+        allRepos = data.repos || [];
+        updateStats();
+        renderTable();
+
+        const stillSyncing = allRepos.some(r => r.commit_count === null || r.commit_count === undefined);
+        if (!stillSyncing) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }, 1500);
+    }
+  }
+
+  async function refreshRepos(force = true) {
     btnRefresh.textContent = '⏳ Syncing...';
     btnRefresh.disabled = true;
 
@@ -207,6 +230,8 @@ document.addEventListener('DOMContentLoaded', () => {
       allRepos = data.repos || [];
       updateStats();
       renderTable();
+
+      checkAndAutoPoll();
     } catch (e) {
       console.error('Smart sync failed', e);
     } finally {
@@ -269,11 +294,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const visText = priv ? 'PRIVATE' : 'PUBLIC';
       const visClass = priv ? 'badge-private' : 'badge-public';
 
-      // Metadata Subsecondary Row (Date first, Link second, Topics third)
+      // Subsecondary metadata row: 1. Date first (4 Jan 24), 2. Link second, 3. Topics third
       const formattedDate = formatDate(r.pushed_at);
       const dateHtml = formattedDate ? `<span class="date-tag">📅 ${formattedDate}</span>` : '';
       const deployHtml = r.homepage ? `<a href="${r.homepage}" target="_blank" class="deploy-link">🔗 ${r.homepage}</a>` : '';
-      const topicsHtml = (r.topics || []).map(t => `<span class="topic-tag">#${t}</span>`).join('');
+      
+      const topicList = Array.isArray(r.topics) ? r.topics : [];
+      const topicsHtml = topicList.map(t => `<span class="topic-tag">#${t}</span>`).join('');
 
       // Single line metrics pill
       const commitCountText = (r.commit_count !== null && r.commit_count !== undefined) ? `${r.commit_count} commits` : '...';

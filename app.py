@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GitHub Repo Curator - Web Application Server & SQLite Cache Engine
-Fast, non-blocking HTTP server with SQLite persistence and smart delta sync.
+Fast, parallel multi-threaded HTTP server with SQLite persistence, smart delta sync, and auto-polling support.
 """
 
 import base64
@@ -11,9 +11,9 @@ import socket
 import sqlite3
 import subprocess
 import sys
-import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 DEFAULT_PORT = 8080
@@ -21,7 +21,7 @@ MAX_PORT_ATTEMPTS = 20
 DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -103,13 +103,31 @@ def get_all_cached_repos():
         item['has_readme'] = bool(item['has_readme']) if item['has_readme'] is not None else None
         item['has_license'] = bool(item['has_license']) if item['has_license'] is not None else None
         try:
-            item['topics'] = json.loads(item['topics']) if item['topics'] else []
+            if isinstance(item['topics'], str):
+                item['topics'] = json.loads(item['topics'])
+            elif not item['topics']:
+                item['topics'] = []
         except Exception:
             item['topics'] = []
         results.append(item)
     return results
 
-def sync_surface_repos(owner):
+def deep_sync_single_repo(owner, name):
+    try:
+        details = get_single_repo_details(owner, name)
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE repo_cache SET
+                has_readme=?, has_license=?, commit_count=?, source_files=?, total_files=?
+            WHERE name=?
+        ''', (details['has_readme'], details['has_license'], details['commit_count'], details['source_files'], details['total_files'], name))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Deep sync error for {name}: {e}", file=sys.stderr)
+
+def sync_surface_repos(owner, force=False):
     repos_raw = run_gh(['--paginate', '/user/repos?type=all&per_page=100']) or []
     owned = [r for r in repos_raw if r['owner']['login'].lower() == owner.lower()]
 
@@ -128,16 +146,22 @@ def sync_surface_repos(owner):
         is_private = 1 if r.get('private') else 0
         visibility = (r.get('visibility') or ('PRIVATE' if is_private else 'PUBLIC')).upper()
         language = (r.get('primaryLanguage') or {}).get('name') or r.get('language') or 'N/A'
-        homepage = r.get('homepageUrl') or r.get('homepage') or ''
+        homepage = r.get('homepage') or r.get('homepageUrl') or ''
         stargazers = r.get('stargazers_count', 0)
         forks = r.get('forks_count', 0)
         pushed_at = (r.get('pushed_at') or r.get('pushedAt') or '')[:10]
-        topics = [t['name'] for t in (r.get('repositoryTopics') or [])] if isinstance(r.get('repositoryTopics'), list) else []
+        
+        # Proper REST API topics extraction
+        raw_topics = r.get('topics') or []
+        if isinstance(raw_topics, list):
+            topics = raw_topics
+        else:
+            topics = []
         topics_json = json.dumps(topics)
         now_str = time.strftime('%Y-%m-%d %H:%M:%S')
 
         cached = existing.get(name)
-        needs_deep = not cached or cached.get('pushed_at') != pushed_at or cached.get('commit_count') is None
+        needs_deep = force or not cached or cached.get('pushed_at') != pushed_at or cached.get('commit_count') is None
         if needs_deep:
             to_deep_sync.append((owner, name))
 
@@ -167,25 +191,11 @@ def sync_surface_repos(owner):
     conn.commit()
     conn.close()
 
-    # Deep detail enrichment in background thread
+    # Parallel multi-threaded deep enrichment
     if to_deep_sync:
-        threading.Thread(target=background_deep_sync, args=(to_deep_sync,), daemon=True).start()
-
-def background_deep_sync(targets):
-    conn = get_db()
-    cursor = conn.cursor()
-    for owner, name in targets:
-        try:
-            details = get_single_repo_details(owner, name)
-            cursor.execute('''
-                UPDATE repo_cache SET
-                    has_readme=?, has_license=?, commit_count=?, source_files=?, total_files=?
-                WHERE name=?
-            ''', (details['has_readme'], details['has_license'], details['commit_count'], details['source_files'], details['total_files'], name))
-            conn.commit()
-        except Exception:
-            pass
-    conn.close()
+        executor = ThreadPoolExecutor(max_workers=8)
+        for o, n in to_deep_sync:
+            executor.submit(deep_sync_single_repo, o, n)
 
 class CuratorAPIHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -207,9 +217,8 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
             owner = user['login']
             cached = get_all_cached_repos()
 
-            # Fast surface sync on initial start if empty
             if not cached:
-                sync_surface_repos(owner)
+                sync_surface_repos(owner, force=True)
                 cached = get_all_cached_repos()
 
             self.send_json_response({'owner': owner, 'repos': cached})
@@ -234,7 +243,7 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
         cursor = conn.cursor()
 
         if path == '/api/refresh':
-            sync_surface_repos(owner)
+            sync_surface_repos(owner, force=body.get('force', False))
             cached = get_all_cached_repos()
             conn.close()
             self.send_json_response({'owner': owner, 'repos': cached, 'message': 'Smart sync completed.'})
