@@ -17,7 +17,7 @@
         <div class="logo-icon">⚡</div>
         <div>
           <h1>GitHub Repo Curator</h1>
-          <p class="subtitle">Bulk Audit & Management Workspace</p>
+          <p class="subtitle">Interactive Bulk Management Dashboard</p>
         </div>
       </div>
       <div class="user-card" id="userCard">
@@ -26,13 +26,13 @@
           <span id="userName" class="user-name">Loading...</span>
           <span id="userLogin" class="user-handle">@username</span>
         </div>
-        <button id="btnRefresh" class="btn-secondary btn-icon" title="Refresh Data">
+        <button id="btnRefresh" class="btn-secondary btn-icon" title="Refresh Repositories">
           🔄 Refresh
         </button>
       </div>
     </header>
 
-    <!-- Stats Row -->
+    <!-- Stats Grid -->
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-icon purple">📦</div>
@@ -56,21 +56,21 @@
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon amber">⚡</div>
+        <div class="stat-icon cyan">🚀</div>
         <div>
-          <div class="stat-value" id="statFewCommits">0</div>
-          <div class="stat-label">&lt; 5 Commits</div>
+          <div class="stat-value" id="statDeployments">0</div>
+          <div class="stat-label">Deployed Apps</div>
         </div>
       </div>
     </div>
 
-    <!-- Main Content Panel -->
+    <!-- Main Workspace -->
     <main class="main-card">
-      <!-- Search & Filters Toolbar -->
+      <!-- Filter Bar -->
       <div class="filter-bar">
         <div class="search-box">
           <span class="search-icon">🔍</span>
-          <input type="text" id="searchInput" placeholder="Search by repo name, description, language..." />
+          <input type="text" id="searchInput" placeholder="Search by repo name, description, language, topics..." />
         </div>
 
         <div class="filter-group">
@@ -93,12 +93,12 @@
         </div>
 
         <div class="filter-group">
-          <label>Scale:</label>
-          <div class="pill-group" id="filterScale">
+          <label>Quick Filters:</label>
+          <div class="pill-group" id="filterQuick">
             <button class="pill active" data-value="all">All</button>
-            <button class="pill" data-value="scaffolding">Scaffolding 🏗️</button>
-            <button class="pill" data-value="small">Small App 📄</button>
-            <button class="pill" data-value="full">Full App 🚀</button>
+            <button class="pill" data-value="hasDeployment">Deployed 🚀</button>
+            <button class="pill" data-value="missingReadme">Missing README 📄</button>
+            <button class="pill" data-value="missingLicense">Missing License 📜</button>
           </div>
         </div>
       </div>
@@ -125,20 +125,18 @@
           <thead>
             <tr>
               <th width="40"><input type="checkbox" id="selectAll" /></th>
-              <th>Repository Name</th>
-              <th>Visibility</th>
-              <th>Scale</th>
-              <th>Commits</th>
-              <th>Files</th>
-              <th>License / README</th>
-              <th>Description</th>
+              <th>Repository & Details</th>
+              <th width="120">Visibility</th>
+              <th width="120">Language</th>
+              <th width="120">Metrics</th>
+              <th width="140">Docs & License</th>
             </tr>
           </thead>
           <tbody id="repoTableBody">
             <tr>
-              <td colspan="8" class="text-center py-8">
+              <td colspan="6" class="text-center py-8">
                 <div class="spinner"></div>
-                <p>Auditing repositories...</p>
+                <p style="text-align:center; padding: 20px; color:#9ca3af;">Loading repositories...</p>
               </td>
             </tr>
           </tbody>
@@ -181,7 +179,7 @@
   <div class="modal-backdrop hidden" id="modalDelete">
     <div class="modal-card modal-danger">
       <h2>🗑️ Confirm Repository Deletion</h2>
-      <p class="modal-subtitle">Warning: This action is permanent and cannot be undone!</p>
+      <p class="modal-subtitle">Warning: Deleting a repository is permanent!</p>
       <p class="delete-list-title">Selected Repositories to Delete:</p>
       <ul id="deleteRepoList" class="delete-list"></ul>
       <p class="text-sm mt-4">Type <strong id="deleteConfirmText">DELETE</strong> to confirm:</p>

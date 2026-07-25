@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
 GitHub Repo Curator - Web Application Server
-Zero-dependency Python HTTP Server & REST API for interactive repository management.
+Zero-dependency Python HTTP Server & REST API with progressive loading and automatic port fallback.
 """
 
 import base64
 import json
 import os
+import socket
 import subprocess
 import sys
 import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-PORT = 8080
+DEFAULT_PORT = 8080
+MAX_PORT_ATTEMPTS = 20
 
 def run_gh(args):
     try:
@@ -26,10 +28,10 @@ def run_gh(args):
 def get_authenticated_user():
     return run_gh(['/user'])
 
-def get_repo_details(owner, name):
+def get_single_repo_details(owner, name):
     full_name = f"{owner}/{name}"
     
-    # Tree check
+    # 1. Tree check
     tree_data = run_gh([f"/repos/{full_name}/git/trees/HEAD?recursive=1"])
     has_tree = tree_data and 'tree' in tree_data
     files = [f['path'] for f in tree_data['tree'] if f['type'] == 'blob'] if has_tree else []
@@ -37,25 +39,12 @@ def get_repo_details(owner, name):
     code_files = [f for f in files if not any(x in f for x in ['node_modules/', '.next/', 'vendor/', 'dist/', 'build/', '.git/'])]
     src_files = [f for f in code_files if f.endswith(('.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.go', '.rs', '.cpp', '.c', '.html', '.css', '.gd', '.php', '.typ'))]
 
-    # Commits check
+    # 2. Commits check
     commits = run_gh([f"/repos/{full_name}/commits?per_page=30"])
     commit_count = len(commits) if isinstance(commits, list) else 0
 
-    # Contributors check
-    contributors = run_gh([f"/repos/{full_name}/contributors?per_page=10"])
-    contrib_count = len(contributors) if isinstance(contributors, list) else 1
-
-    # Readme & License check
     has_readme = any('readme' in f.lower() for f in files)
     has_license = any('license' in f.lower() for f in files)
-
-    # Scale category
-    if len(src_files) == 0:
-        scale = 'Scaffolding / Assets'
-    elif len(src_files) <= 5:
-        scale = 'Small App / Script'
-    else:
-        scale = 'Full Application'
 
     return {
         'name': name,
@@ -64,8 +53,6 @@ def get_repo_details(owner, name):
         'code_files': len(code_files),
         'source_files': len(src_files),
         'commit_count': commit_count,
-        'contrib_count': contrib_count,
-        'scale': scale,
         'has_readme': has_readme,
         'has_license': has_license
     }
@@ -77,9 +64,11 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
 
         if path == '/api/user':
             self.send_json_response(get_authenticated_user() or {})
+
         elif path == '/api/repos':
             user = get_authenticated_user()
             if not user or 'login' not in user:
@@ -87,21 +76,45 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
                 return
             
             owner = user['login']
-            repos_raw = run_gh(['--paginate', f'/users/{owner}/repos?per_page=100']) or []
+            # Using /user/repos?type=all to fetch ALL public AND private repos owned by user
+            repos_raw = run_gh(['--paginate', '/user/repos?type=all&per_page=100']) or []
             owned = [r for r in repos_raw if r['owner']['login'].lower() == owner.lower()]
 
+            # Instant metadata load without blocking sub-requests
             results = []
             for r in owned:
-                name = r['name']
-                details = get_repo_details(owner, name)
-                details['description'] = r.get('description') or ''
-                details['visibility'] = r.get('visibility') or ('PRIVATE' if r.get('private') else 'PUBLIC')
-                details['language'] = (r.get('primaryLanguage') or {}).get('name', 'N/A')
                 topics = [t['name'] for t in (r.get('repositoryTopics') or [])] if isinstance(r.get('repositoryTopics'), list) else []
-                details['topics'] = topics
-                results.append(details)
+                results.append({
+                    'name': r['name'],
+                    'full_name': r['full_name'],
+                    'description': r.get('description') or '',
+                    'visibility': r.get('visibility') or ('PRIVATE' if r.get('private') else 'PUBLIC'),
+                    'is_private': r.get('private', False),
+                    'language': (r.get('primaryLanguage') or {}).get('name') or r.get('language') or 'N/A',
+                    'homepage': r.get('homepageUrl') or r.get('homepage') or '',
+                    'stargazers_count': r.get('stargazers_count', 0),
+                    'forks_count': r.get('forks_count', 0),
+                    'pushed_at': (r.get('pushed_at') or r.get('pushedAt') or '')[:10],
+                    'topics': topics,
+                    'has_readme': None,  # Computed on demand/progressive load
+                    'has_license': bool(r.get('license')),
+                    'commit_count': None,
+                    'source_files': None,
+                    'total_files': None
+                })
 
             self.send_json_response({'owner': owner, 'repos': results})
+
+        elif path == '/api/repo-details':
+            repo_name = query.get('repo', [None])[0]
+            user = get_authenticated_user()
+            if not repo_name or not user:
+                self.send_json_response({'error': 'Missing repo parameter'}, status=400)
+                return
+            
+            details = get_single_repo_details(user['login'], repo_name)
+            self.send_json_response(details)
+
         else:
             super().do_GET()
 
@@ -117,7 +130,6 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
             return
         owner = user['login']
         repos = body.get('repos', [])
-
         logs = []
 
         if path == '/api/actions/visibility':
@@ -125,7 +137,7 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
             for repo in repos:
                 full_name = f"{owner}/{repo}"
                 try:
-                    res = subprocess.run(['gh', 'repo', 'edit', full_name, '--visibility', vis, '--accept-visibility-change-consequences'], capture_output=True, text=True, check=True)
+                    subprocess.run(['gh', 'repo', 'edit', full_name, '--visibility', vis, '--accept-visibility-change-consequences'], capture_output=True, text=True, check=True)
                     logs.append({'repo': repo, 'status': 'success', 'message': f'Visibility set to {vis.upper()}'})
                 except subprocess.CalledProcessError as e:
                     logs.append({'repo': repo, 'status': 'error', 'message': e.stderr.strip()})
@@ -235,9 +247,24 @@ This project is licensed under the MIT License.
         self.end_headers()
         self.wfile.write(body)
 
+def find_available_port(start_port, max_attempts=MAX_PORT_ATTEMPTS):
+    for port in range(start_port, start_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(('0.0.0.0', port))
+                return port
+            except OSError:
+                continue
+    return None
+
 def main():
-    print(f"🚀 Starting GitHub Repo Curator Web Server on http://localhost:{PORT}")
-    server = HTTPServer(('0.0.0.0', PORT), CuratorAPIHandler)
+    port = find_available_port(DEFAULT_PORT)
+    if not port:
+        print(f"❌ Error: Could not find an open port starting from {DEFAULT_PORT}.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"🚀 Starting GitHub Repo Curator Web Server on http://localhost:{port}")
+    server = HTTPServer(('0.0.0.0', port), CuratorAPIHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

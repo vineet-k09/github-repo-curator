@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GitHub Repository Auditor & Summarizer
-User-agnostic CLI tool to audit, filter, and extract repository lists for any GitHub user.
+User-agnostic CLI tool to audit, filter, and summarize GitHub repositories.
 """
 
 import argparse
@@ -12,8 +12,10 @@ import sys
 
 def run_gh(args):
     try:
-        out = subprocess.check_output(['gh', 'api'] + args, stderr=subprocess.DEVNULL)
-        return json.loads(out)
+        res = subprocess.run(['gh', 'api'] + args, capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip():
+            return json.loads(res.stdout)
+        return None
     except Exception:
         return None
 
@@ -24,11 +26,10 @@ def get_authenticated_user():
     return None
 
 def get_user_repos(username):
-    endpoint = f'/users/{username}/repos?per_page=100'
-    repos = run_gh(['--paginate', endpoint])
+    # Fetch all public and private repos using /user/repos?type=all
+    repos = run_gh(['--paginate', '/user/repos?type=all&per_page=100'])
     if not repos:
-        endpoint = '/user/repos?per_page=100'
-        repos = run_gh(['--paginate', endpoint])
+        repos = run_gh(['--paginate', f'/users/{username}/repos?per_page=100'])
     
     if not repos:
         print(f"Error: Could not fetch repositories for user '{username}'.", file=sys.stderr)
@@ -47,10 +48,8 @@ def audit_repo(owner, name):
             'status': 'EMPTY',
             'commit_count': 0,
             'commit_category': '< 5 commits',
-            'contributor_category': 'Solo',
-            'code_files': 0,
-            'total_files': 0,
-            'scale_category': 'Scaffolding / Assets'
+            'source_files': 0,
+            'total_files': 0
         }
         
     files = [f['path'] for f in tree_data['tree'] if f['type'] == 'blob']
@@ -66,17 +65,6 @@ def audit_repo(owner, name):
     else:
         commit_cat = '< 5 commits'
 
-    contributors = run_gh([f"/repos/{full_name}/contributors?per_page=10"])
-    contrib_count = len(contributors) if isinstance(contributors, list) else 1
-    contrib_cat = 'Solo' if contrib_count <= 1 else f'Multi-contributor ({contrib_count})'
-
-    if len(src_files) == 0:
-        scale_cat = 'Scaffolding / Assets'
-    elif len(src_files) <= 5:
-        scale_cat = 'Small Application / Script'
-    else:
-        scale_cat = 'Full Application'
-
     return {
         'name': name,
         'full_name': full_name,
@@ -84,17 +72,15 @@ def audit_repo(owner, name):
         'code_files': len(code_files),
         'source_files': len(src_files),
         'commit_count': commit_count,
-        'commit_category': commit_cat,
-        'contributor_category': contrib_cat,
-        'scale_category': scale_cat
+        'commit_category': commit_cat
     }
 
 def main():
     parser = argparse.ArgumentParser(description="Audit and filter GitHub repositories for any user.")
     parser.add_argument('--user', type=str, help="Target GitHub username (defaults to current gh user)")
     parser.add_argument('--5commits', '--less-than-5-commits', action='store_true', dest='five_commits', help="Filter repositories with < 5 commits")
-    parser.add_argument('--solo', action='store_true', help="Filter solo contributor repositories")
-    parser.add_argument('--scale', type=str, choices=['scaffolding', 'small', 'full'], help="Filter by scale (scaffolding, small, full)")
+    parser.add_argument('--private', action='store_true', help="Filter private repositories only")
+    parser.add_argument('--public', action='store_true', help="Filter public repositories only")
     parser.add_argument('--raw', '--list-only', action='store_true', dest='raw', help="Output line-separated repo names only (great for piping/clipboard)")
     parser.add_argument('-o', '--out-file', type=str, help="Save repo names list to specified text file (e.g. target_repos.txt)")
     parser.add_argument('--json-out', type=str, help="Save full audit details to JSON file")
@@ -127,20 +113,13 @@ def main():
     filtered = audited
     if args.five_commits:
         filtered = [r for r in filtered if r['commit_count'] < 5]
-    if args.solo:
-        filtered = [r for r in filtered if r['contributor_category'] == 'Solo']
-    if args.scale:
-        scale_map = {
-            'scaffolding': 'Scaffolding / Assets',
-            'small': 'Small Application / Script',
-            'full': 'Full Application'
-        }
-        target_scale = scale_map[args.scale]
-        filtered = [r for r in filtered if r['scale_category'] == target_scale]
+    if args.private:
+        filtered = [r for r in filtered if r['visibility'] == 'PRIVATE']
+    if args.public:
+        filtered = [r for r in filtered if r['visibility'] == 'PUBLIC']
 
     repo_names = [r['name'] for r in filtered]
 
-    # Handle output file
     if args.out_file:
         with open(args.out_file, 'w') as f:
             f.write("\n".join(repo_names) + ("\n" if repo_names else ""))
@@ -153,19 +132,18 @@ def main():
         if not args.raw:
             print(f"✅ Saved detailed JSON report to '{args.json_out}'.", file=sys.stderr)
 
-    # Output to stdout
     if args.raw:
         for name in repo_names:
             print(name)
     else:
-        print("\n" + "=" * 90, file=sys.stderr)
+        print("\n" + "=" * 80, file=sys.stderr)
         print(f"📊 GITHUB REPOSITORY AUDIT SUMMARY FOR @{target_user} ({len(filtered)} repos match)", file=sys.stderr)
-        print("=" * 90, file=sys.stderr)
-        print(f"{'Repository Name':<30} | {'Visibility':<8} | {'Scale':<24} | {'Commits':<13} | {'Team':<6}", file=sys.stderr)
-        print("-" * 90, file=sys.stderr)
+        print("=" * 80, file=sys.stderr)
+        print(f"{'Repository Name':<32} | {'Visibility':<8} | {'Language':<12} | {'Commits':<13} | {'Source Files':<12}", file=sys.stderr)
+        print("-" * 80, file=sys.stderr)
         for a in filtered:
-            print(f"{a['name']:<30} | {a['visibility']:<8} | {a['scale_category']:<24} | {a['commit_category']:<13} | {a['contributor_category']:<6}", file=sys.stderr)
-        print("=" * 90, file=sys.stderr)
+            print(f"{a['name']:<32} | {a['visibility']:<8} | {a['language']:<12} | {a['commit_category']:<13} | {a['source_files']} / {a['total_files']}", file=sys.stderr)
+        print("=" * 80, file=sys.stderr)
 
 if __name__ == '__main__':
     main()

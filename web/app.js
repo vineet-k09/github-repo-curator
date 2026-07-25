@@ -1,11 +1,13 @@
 document.addEventListener('DOMContentLoaded', () => {
   let allRepos = [];
+  let repoDetailsCache = new Map();
   let selectedRepos = new Set();
+  
   let filters = {
     search: '',
     visibility: 'all',
     commits: 'all',
-    scale: 'all'
+    quick: 'all'
   };
 
   // DOM Elements
@@ -16,7 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const statTotal = document.getElementById('statTotal');
   const statPublic = document.getElementById('statPublic');
   const statPrivate = document.getElementById('statPrivate');
-  const statFewCommits = document.getElementById('statFewCommits');
+  const statDeployments = document.getElementById('statDeployments');
 
   const repoTableBody = document.getElementById('repoTableBody');
   const selectAll = document.getElementById('selectAll');
@@ -47,7 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const logOutput = document.getElementById('logOutput');
   const btnCloseLogs = document.getElementById('btnCloseLogs');
 
-  // Bulk buttons
+  // Bulk action buttons
   const btnMakePublic = document.getElementById('btnMakePublic');
   const btnMakePrivate = document.getElementById('btnMakePrivate');
   const btnSetDesc = document.getElementById('btnSetDesc');
@@ -56,7 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnAddReadme = document.getElementById('btnAddReadme');
   const btnDelete = document.getElementById('btnDelete');
 
-  // Init
+  // Initialization
   fetchUser();
   fetchRepos();
 
@@ -70,7 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   setupPillGroup('filterVisibility', (val) => { filters.visibility = val; renderTable(); });
   setupPillGroup('filterCommits', (val) => { filters.commits = val; renderTable(); });
-  setupPillGroup('filterScale', (val) => { filters.scale = val; renderTable(); });
+  setupPillGroup('filterQuick', (val) => { filters.quick = val; renderTable(); });
 
   selectAll.addEventListener('change', (e) => {
     const isChecked = e.target.checked;
@@ -144,7 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchRepos();
   });
 
-  // Functions
+  // Helper Functions
   function setupPillGroup(groupId, callback) {
     const container = document.getElementById(groupId);
     container.addEventListener('click', (e) => {
@@ -172,9 +174,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function fetchRepos() {
     repoTableBody.innerHTML = `
-      <tr><td colspan="8" class="text-center py-8">
-        <div class="spinner"></div>
-        <p style="text-align:center; padding: 20px; color:#9ca3af;">Auditing repositories...</p>
+      <tr><td colspan="6" class="text-center py-8">
+        <p style="text-align:center; padding: 20px; color:#9ca3af;">Loading repositories...</p>
       </td></tr>`;
 
     try {
@@ -183,8 +184,54 @@ document.addEventListener('DOMContentLoaded', () => {
       allRepos = data.repos || [];
       updateStats();
       renderTable();
+      
+      // Background progressive fetch for details
+      fetchProgressiveDetails();
     } catch (e) {
-      repoTableBody.innerHTML = `<tr><td colspan="8" style="color:#ef4444; text-align:center; padding: 20px;">Failed to load repositories.</td></tr>`;
+      repoTableBody.innerHTML = `<tr><td colspan="6" style="color:#ef4444; text-align:center; padding: 20px;">Failed to load repositories.</td></tr>`;
+    }
+  }
+
+  async function fetchProgressiveDetails() {
+    for (const r of allRepos) {
+      if (repoDetailsCache.has(r.name)) {
+        Object.assign(r, repoDetailsCache.get(r.name));
+      } else {
+        try {
+          const res = await fetch(`/api/repo-details?repo=${r.name}`);
+          if (res.ok) {
+            const details = await res.json();
+            repoDetailsCache.set(r.name, details);
+            Object.assign(r, details);
+            // Re-render row metrics dynamically
+            updateRowMetrics(r.name);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  function updateRowMetrics(repoName) {
+    const r = allRepos.find(item => item.name === repoName);
+    if (!r) return;
+    
+    const commitEl = document.getElementById(`commits-${r.name}`);
+    if (commitEl && r.commit_count !== null) {
+      commitEl.className = 'badge badge-amber';
+      commitEl.textContent = `${r.commit_count} commits`;
+    }
+
+    const filesEl = document.getElementById(`files-${r.name}`);
+    if (filesEl && r.source_files !== null) {
+      filesEl.innerHTML = `<span title="${r.source_files} source files out of ${r.total_files} total workspace files">${r.source_files} / ${r.total_files} files</span>`;
+    }
+
+    const docsEl = document.getElementById(`docs-${r.name}`);
+    if (docsEl && r.has_readme !== null) {
+      docsEl.innerHTML = `
+        <span style="color:${r.has_license ? '#34d399' : '#9ca3af'}">📜 ${r.has_license ? 'Yes' : 'No'}</span> | 
+        <span style="color:${r.has_readme ? '#34d399' : '#9ca3af'}">📄 ${r.has_readme ? 'Yes' : 'No'}</span>
+      `;
     }
   }
 
@@ -192,32 +239,32 @@ document.addEventListener('DOMContentLoaded', () => {
     statTotal.textContent = allRepos.length;
     statPublic.textContent = allRepos.filter(r => r.visibility === 'PUBLIC').length;
     statPrivate.textContent = allRepos.filter(r => r.visibility === 'PRIVATE').length;
-    statFewCommits.textContent = allRepos.filter(r => r.commit_count < 5).length;
+    statDeployments.textContent = allRepos.filter(r => Boolean(r.homepage)).length;
   }
 
   function getFilteredRepos() {
     return allRepos.filter(r => {
-      // Search
       if (filters.search) {
         const q = filters.search;
         const matchName = r.name.toLowerCase().includes(q);
         const matchDesc = r.description.toLowerCase().includes(q);
         const matchLang = r.language.toLowerCase().includes(q);
-        if (!matchName && !matchDesc && !matchLang) return false;
+        const matchTopics = (r.topics || []).some(t => t.toLowerCase().includes(q));
+        if (!matchName && !matchDesc && !matchLang && !matchTopics) return false;
       }
-      // Visibility
+
       if (filters.visibility === 'public' && r.visibility !== 'PUBLIC') return false;
       if (filters.visibility === 'private' && r.visibility !== 'PRIVATE') return false;
 
-      // Commits
-      if (filters.commits === 'lt5' && r.commit_count >= 5) return false;
-      if (filters.commits === '5to20' && (r.commit_count < 5 || r.commit_count > 20)) return false;
-      if (filters.commits === 'gt20' && r.commit_count <= 20) return false;
+      if (r.commit_count !== null) {
+        if (filters.commits === 'lt5' && r.commit_count >= 5) return false;
+        if (filters.commits === '5to20' && (r.commit_count < 5 || r.commit_count > 20)) return false;
+        if (filters.commits === 'gt20' && r.commit_count <= 20) return false;
+      }
 
-      // Scale
-      if (filters.scale === 'scaffolding' && !r.scale.includes('Scaffolding')) return false;
-      if (filters.scale === 'small' && !r.scale.includes('Small App')) return false;
-      if (filters.scale === 'full' && !r.scale.includes('Full Application')) return false;
+      if (filters.quick === 'hasDeployment' && !r.homepage) return false;
+      if (filters.quick === 'missingReadme' && r.has_readme === true) return false;
+      if (filters.quick === 'missingLicense' && r.has_license === true) return false;
 
       return true;
     });
@@ -226,36 +273,61 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderTable() {
     const repos = getFilteredRepos();
     if (repos.length === 0) {
-      repoTableBody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:#9ca3af; padding: 24px;">No repositories match the selected filters.</td></tr>`;
+      repoTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#9ca3af; padding: 32px;">No repositories match the selected filters.</td></tr>`;
       return;
     }
 
     repoTableBody.innerHTML = repos.map(r => {
       const isChecked = selectedRepos.has(r.name);
       const visClass = r.visibility === 'PUBLIC' ? 'badge-public' : 'badge-private';
-      const topicsHtml = (r.topics || []).map(t => `<span class="topic-tag">${t}</span>`).join('');
+      const topicsHtml = (r.topics || []).map(t => `<span class="topic-tag">#${t}</span>`).join('');
+      const deployHtml = r.homepage ? `<a href="${r.homepage}" target="_blank" class="deploy-link">🔗 ${r.homepage}</a>` : '';
+      const dateHtml = r.pushed_at ? `<span class="date-tag">📅 ${r.pushed_at}</span>` : '';
+
+      const commitBadge = r.commit_count !== null 
+        ? `<span id="commits-${r.name}" class="badge badge-amber">${r.commit_count} commits</span>`
+        : `<span id="commits-${r.name}" class="badge badge-gray">...</span>`;
+
+      const filesInfo = r.source_files !== null
+        ? `<span id="files-${r.name}" style="color:#9ca3af" title="${r.source_files} source files out of ${r.total_files} workspace files">${r.source_files} / ${r.total_files} files</span>`
+        : `<span id="files-${r.name}" style="color:#9ca3af">...</span>`;
+
+      const docsInfo = r.has_readme !== null
+        ? `<span id="docs-${r.name}"><span style="color:${r.has_license ? '#34d399' : '#9ca3af'}">📜 ${r.has_license ? 'Yes' : 'No'}</span> | <span style="color:${r.has_readme ? '#34d399' : '#9ca3af'}">📄 ${r.has_readme ? 'Yes' : 'No'}</span></span>`
+        : `<span id="docs-${r.name}"><span style="color:${r.has_license ? '#34d399' : '#9ca3af'}">📜 ${r.has_license ? 'Yes' : 'No'}</span> | <span style="color:#9ca3af">📄 ...</span></span>`;
 
       return `
         <tr>
           <td><input type="checkbox" class="repo-select" data-name="${r.name}" ${isChecked ? 'checked' : ''} /></td>
           <td>
-            <a href="https://github.com/${r.full_name}" target="_blank" class="repo-title">${r.name}</a>
-            <div class="tag-list">${topicsHtml}</div>
+            <div class="repo-main-info">
+              <div class="repo-title-wrapper">
+                <a href="https://github.com/${r.full_name}" target="_blank" class="repo-title">${r.name}</a>
+              </div>
+              <div class="subsecondary-row">
+                <div class="repo-desc">${r.description || '<em>No description provided</em>'}</div>
+                <div class="meta-pills">
+                  ${deployHtml}
+                  ${topicsHtml}
+                  ${dateHtml}
+                </div>
+              </div>
+            </div>
           </td>
           <td><span class="badge ${visClass}">${r.visibility}</span></td>
-          <td><span class="badge badge-gray">${r.scale}</span></td>
-          <td><span class="badge badge-amber">${r.commit_count} commits</span></td>
-          <td><span style="color:#9ca3af">${r.source_files} / ${r.total_files}</span></td>
+          <td><span class="badge badge-lang">${r.language}</span></td>
           <td>
-            <span style="color:${r.has_license ? '#34d399' : '#9ca3af'}">📜 ${r.has_license ? 'Yes' : 'No'}</span> | 
-            <span style="color:${r.has_readme ? '#34d399' : '#9ca3af'}">📄 ${r.has_readme ? 'Yes' : 'No'}</span>
+            <div style="display:flex; flex-direction:column; gap:4px;">
+              ${commitBadge}
+              ${filesInfo}
+            </div>
           </td>
-          <td style="color:#9ca3af; font-size:13px;">${r.description || '<em>No description</em>'}</td>
+          <td>${docsInfo}</td>
         </tr>
       `;
     }).join('');
 
-    // Attach row select handlers
+    // Attach row select listeners
     document.querySelectorAll('.repo-select').forEach(cb => {
       cb.addEventListener('change', (e) => {
         const name = e.target.dataset.name;
