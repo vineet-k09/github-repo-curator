@@ -7,3 +7,4 @@ cache.db
 target_repos.txt
 repo_audit_summary.json
 __pycache__/
+.vercel

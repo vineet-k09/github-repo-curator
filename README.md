@@ -2,24 +2,22 @@
 
 > **User-agnostic, zero-backend-state Web Dashboard & CLI toolkit to audit, filter, organize, and bulk-manage GitHub repositories.**
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvineet-k09%2Fgithub-repo-curator)
-
 `github-repo-curator` replaces manual command-line copy-pasting with a clean, interactive Web Dashboard where you can filter repositories by visibility (Public/Private), commit count, or documentation status, multi-select targets, and perform bulk actions (Public/Private toggle, Edit Descriptions, Add Topics, Generate MIT License, Generate README.md, or Bulk Delete).
 
 ---
 
 ## 🔒 100% Privacy & Client-Side LocalStorage Architecture
 
-When deployed to Vercel (or hosted anywhere), **no user data or tokens are stored on a server**. 
+When hosted or deployed, **no user data or tokens are stored on a server**. 
 - Every visitor gets their own **isolated `localStorage` cache** directly in their web browser!
 - API requests communicate directly from the browser to `https://api.github.com`.
-- Zero setup time for anyone: deploy ONCE to Vercel and share the URL. Anyone can connect their account safely without data mixing.
+- Zero setup time for visitors: anyone can connect their account safely without data mixing.
 
 ---
 
 ## ✨ Features
 
-- 🌐 **Deploy Anywhere (Vercel & Local)**: Deploy once on Vercel or run locally with zero npm/pip dependencies.
+- 🌐 **Deployable Anywhere & Local**: Run locally or host on Vercel with zero npm/pip dependencies.
 - 🔑 **Dual Authentication (gh CLI or Personal Access Token)**:
   - Auto-detects `gh` CLI login if available locally.
   - Interactive step-by-step onboarding card in the UI with a direct link to generate a Personal Access Token (PAT).
@@ -41,16 +39,8 @@ When deployed to Vercel (or hosted anywhere), **no user data or tokens are store
 
 ---
 
-## 🚀 Deployment Options
+## 💻 Quick Start (Local Setup)
 
-### Option 1: 🌐 Deploy Once on Vercel
-Deploy to Vercel so anyone can use it without setup:
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvineet-k09%2Fgithub-repo-curator)
-
----
-
-### Option 2: 💻 Local Web Dashboard
 ```bash
 git clone https://github.com/vineet-k09/github-repo-curator.git
 cd github-repo-curator
@@ -59,6 +49,7 @@ cd github-repo-curator
 make gui
 ```
 Open **http://localhost:8080** in your browser!
+
 
 ---
 
