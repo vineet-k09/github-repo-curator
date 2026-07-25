@@ -183,14 +183,13 @@ document.addEventListener('DOMContentLoaded', () => {
       let reposRaw = [];
       let page = 1;
       while (true) {
-        const pageData = await ghFetch(`/user/repos?type=all&per_page=100&page=${page}`, {
-          headers: { 'Cache-Control': 'no-cache' }
-        });
+        const pageData = await ghFetch(`/user/repos?type=all&per_page=100&page=${page}&_t=${Date.now()}`);
         if (!Array.isArray(pageData) || pageData.length === 0) break;
         reposRaw.push(...pageData);
         if (pageData.length < 100) break;
         page++;
       }
+
 
       if (!currentUser) await syncUserData();
       const owner = currentUser ? currentUser.login.toLowerCase() : '';
