@@ -21,6 +21,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 DEFAULT_PORT = 8080
 MAX_PORT_ATTEMPTS = 20
 DB_PATH = os.path.join(os.path.dirname(__file__), 'cache.db')
+PAT_CREATE_URL = "https://github.com/settings/tokens/new?scopes=repo,delete_repo&description=GitHub-Repo-Curator"
 
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
 
@@ -59,7 +60,6 @@ def init_db():
 def run_github_api(endpoint, method='GET', payload=None, token=None):
     auth_token = token or GITHUB_TOKEN
 
-    # If PAT token is provided or set, use direct HTTP request
     if auth_token:
         url = f"https://api.github.com{endpoint}" if endpoint.startswith('/') else endpoint
         headers = {
@@ -73,13 +73,12 @@ def run_github_api(endpoint, method='GET', payload=None, token=None):
             with urllib.request.urlopen(req) as resp:
                 if resp.status in (200, 201):
                     return json.loads(resp.read().decode('utf-8'))
-                elif resp.status == 24:
+                elif resp.status == 204:
                     return {}
                 return {}
         except Exception:
             return None
 
-    # Fallback to gh CLI
     try:
         cmd = ['gh', 'api']
         if method != 'GET':
@@ -242,12 +241,23 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
 
         if path == '/api/user':
             user = get_authenticated_user(token=token)
-            self.send_json_response(user or {})
+            if not user or 'login' not in user:
+                self.send_json_response({
+                    'error': 'Unauthorized',
+                    'pat_url': PAT_CREATE_URL,
+                    'message': 'No GitHub authentication detected. Set GITHUB_TOKEN or use gh auth login.'
+                }, status=401)
+                return
+            self.send_json_response(user)
 
         elif path == '/api/repos':
             user = get_authenticated_user(token=token)
             if not user or 'login' not in user:
-                self.send_json_response({'error': 'Unauthorized. Please provide a GitHub Personal Access Token or log in with gh CLI.'}, status=401)
+                self.send_json_response({
+                    'error': 'Unauthorized',
+                    'pat_url': PAT_CREATE_URL,
+                    'message': 'No GitHub authentication detected.'
+                }, status=401)
                 return
             
             owner = user['login']
@@ -425,7 +435,23 @@ def main():
         print(f"❌ Error: Could not find an open port starting from {DEFAULT_PORT}.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🚀 Starting GitHub Repo Curator Web Server on http://localhost:{port}")
+    user = get_authenticated_user()
+    print("=" * 70)
+    print(f"🚀 GitHub Repo Curator Web Server: http://localhost:{port}")
+    print("=" * 70)
+    
+    if user and 'login' in user:
+        print(f"✅ Authenticated GitHub User: @{user['login']} ({user.get('name') or ''})")
+    else:
+        print("⚠️  NOTICE: No active GitHub authentication detected!")
+        print("-------------------------------------------------------------")
+        print("👉 Option 1 (CLI): Run 'gh auth login' or export a token:")
+        print('   export GITHUB_TOKEN="ghp_yourPersonalAccessToken"')
+        print("\n👉 Option 2 (Web UI): Clickable Token Generator Link:")
+        print(f"   🔗 {PAT_CREATE_URL}")
+        print("\n💡 Open http://localhost:{} to configure token interactively in the browser UI.".format(port))
+        print("-------------------------------------------------------------")
+
     server = HTTPServer(('0.0.0.0', port), CuratorAPIHandler)
     try:
         server.serve_forever()

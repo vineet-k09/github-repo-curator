@@ -14,6 +14,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const userAvatar = document.getElementById('userAvatar');
   const userName = document.getElementById('userName');
   const userLogin = document.getElementById('userLogin');
+  const authCard = document.getElementById('authCard');
+  const patInput = document.getElementById('patInput');
+  const btnSavePat = document.getElementById('btnSavePat');
 
   const statTotal = document.getElementById('statTotal');
   const statPublic = document.getElementById('statPublic');
@@ -58,12 +61,32 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnAddReadme = document.getElementById('btnAddReadme');
   const btnDelete = document.getElementById('btnDelete');
 
+  // Headers helper
+  function getAuthHeaders() {
+    const headers = {};
+    const storedPat = localStorage.getItem('gh_pat');
+    if (storedPat) {
+      headers['Authorization'] = `Bearer ${storedPat.trim()}`;
+    }
+    return headers;
+  }
+
   // Initialization
   fetchUser();
   fetchRepos();
 
   // Listeners
   btnRefresh.addEventListener('click', () => { refreshRepos(true); });
+
+  btnSavePat.addEventListener('click', () => {
+    const token = patInput.value.trim();
+    if (token) {
+      localStorage.setItem('gh_pat', token);
+      authCard.classList.add('hidden');
+      fetchUser();
+      fetchRepos();
+    }
+  });
 
   searchInput.addEventListener('input', (e) => {
     filters.search = e.target.value.toLowerCase();
@@ -171,9 +194,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function fetchUser() {
     try {
-      const res = await fetch('/api/user');
+      const res = await fetch('/api/user', { headers: getAuthHeaders() });
+      if (res.status === 401) {
+        authCard.classList.remove('hidden');
+        userName.textContent = 'Unauthenticated';
+        userLogin.textContent = '@none';
+        return;
+      }
       const user = await res.json();
       if (user.login) {
+        authCard.classList.add('hidden');
         userAvatar.src = user.avatar_url || 'https://github.com/github.png';
         userName.textContent = user.name || user.login;
         userLogin.textContent = `@${user.login}`;
@@ -185,7 +215,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function fetchRepos() {
     try {
-      const res = await fetch('/api/repos');
+      const res = await fetch('/api/repos', { headers: getAuthHeaders() });
+      if (res.status === 401) {
+        authCard.classList.remove('hidden');
+        repoTableBody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#9ca3af; padding: 24px;">Please connect your GitHub account using the guide above.</td></tr>`;
+        return;
+      }
       const data = await res.json();
       allRepos = data.repos || [];
       updateStats();
@@ -201,7 +236,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const needsSync = allRepos.some(r => r.commit_count === null || r.commit_count === undefined);
     if (needsSync && !pollTimer) {
       pollTimer = setInterval(async () => {
-        const res = await fetch('/api/repos');
+        const res = await fetch('/api/repos', { headers: getAuthHeaders() });
         const data = await res.json();
         allRepos = data.repos || [];
         updateStats();
@@ -223,7 +258,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/refresh', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ force })
       });
       const data = await res.json();
@@ -294,24 +329,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const visText = priv ? 'PRIVATE' : 'PUBLIC';
       const visClass = priv ? 'badge-private' : 'badge-public';
 
-      // Subsecondary metadata row: 1. Date first (4 Jan 24), 2. Link second, 3. Topics third
       const formattedDate = formatDate(r.pushed_at);
-      const dateHtml = formattedDate ? `<span class="date-tag">${formattedDate}</span>` : '';
+      const dateHtml = formattedDate ? `<span class="date-tag">📅 ${formattedDate}</span>` : '';
       const deployHtml = r.homepage ? `<a href="${r.homepage}" target="_blank" class="deploy-link">🔗 ${r.homepage}</a>` : '';
       
       const topicList = Array.isArray(r.topics) ? r.topics : [];
       const topicsHtml = topicList.map(t => `<span class="topic-tag">#${t}</span>`).join('');
 
-      // Single line metrics pill
       const commitCountText = (r.commit_count !== null && r.commit_count !== undefined) ? `${r.commit_count} commits` : '...';
       const filesCountText = (r.source_files !== null && r.source_files !== undefined) ? `${r.source_files}/${r.total_files} files` : '...';
       const metricsHtml = `<div class="metrics-inline"><span class="highlight">${commitCountText}</span> • <span>${filesCountText}</span></div>`;
 
-      // 2-line Docs Status (showing ONLY missing items)
       let docsHtml = '';
       const missing = [];
-      if (r.has_readme === false) missing.push('<span class="badge-missing">No README</span>');
-      if (r.has_license === false) missing.push('<span class="badge-missing">No License</span>');
+      if (r.has_readme === false) missing.push('<span class="badge-missing">⚠️ No README</span>');
+      if (r.has_license === false) missing.push('<span class="badge-missing">⚠️ No License</span>');
 
       if (missing.length === 0) {
         docsHtml = `<span class="badge-ok">✓ Complete</span>`;
@@ -343,7 +375,6 @@ document.addEventListener('DOMContentLoaded', () => {
       `;
     }).join('');
 
-    // Checkbox Listeners
     document.querySelectorAll('.repo-select').forEach(cb => {
       cb.addEventListener('change', (e) => {
         const name = e.target.dataset.name;
@@ -373,7 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(payload)
       });
       const data = await res.json();

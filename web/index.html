@@ -27,10 +27,41 @@
           <span id="userLogin" class="user-handle">@username</span>
         </div>
         <button id="btnRefresh" class="btn-secondary btn-icon" title="Smart Delta Refresh">
-          Sync
+          🔄 Smart Sync
         </button>
       </div>
     </header>
+
+    <!-- Onboarding Auth Setup Banner (shown when unauthenticated) -->
+    <div class="auth-card hidden" id="authCard">
+      <div class="auth-header">
+        <h2>🔑 Connect GitHub Account</h2>
+        <p>No active GitHub authentication detected. Follow the step-by-step guide below:</p>
+      </div>
+      <div class="auth-steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div>
+            <strong>Generate a GitHub Token</strong>
+            <p>Click below to open the GitHub token creation page with pre-filled scopes (<code>repo</code>, <code>delete_repo</code>):</p>
+            <a href="https://github.com/settings/tokens/new?scopes=repo,delete_repo&description=GitHub-Repo-Curator" target="_blank" class="btn-pat-link">
+              🔗 Click to Generate Personal Access Token (PAT)
+            </a>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div>
+            <strong>Save & Connect</strong>
+            <p>Copy your generated token (starts with <code>ghp_</code>) and paste it below:</p>
+            <div class="pat-input-group">
+              <input type="password" id="patInput" placeholder="Paste ghp_... token here" />
+              <button id="btnSavePat" class="btn-primary">Connect Account</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Stats Grid -->
     <div class="stats-grid">
@@ -135,7 +166,7 @@
           <tbody id="repoTableBody">
             <tr>
               <td colspan="6" class="text-center py-8">
-                <p style="text-align:center; padding: 20px; color:#9ca3af;">Loading cached repositories...</p>
+                <p style="text-align:center; padding: 20px; color:#9ca3af;">Loading repositories...</p>
               </td>
             </tr>
           </tbody>
