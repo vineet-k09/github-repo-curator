@@ -2,18 +2,20 @@
 
 > **User-agnostic, interactive Web Dashboard & CLI toolkit to audit, filter, organize, and bulk-manage GitHub repositories.**
 
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvineet-k09%2Fgithub-repo-curator)
+
 `github-repo-curator` replaces manual command-line copy-pasting with a clean, interactive Web Dashboard where you can filter repositories by visibility (Public/Private), commit count, or documentation status, multi-select targets, and perform bulk actions (Public/Private toggle, Edit Descriptions, Add Topics, Generate MIT License, Generate README.md, or Bulk Delete).
 
 ---
 
 ## ✨ Features
 
-- 🖥️ **Interactive Web Dashboard**: Beautiful dark glassmorphism UI running locally (`http://localhost:8080`). Zero external npm/pip dependencies required!
+- 🌐 **Deploy Anywhere (Vercel & Local)**: 1-Click deploy to Vercel or run locally with zero npm/pip dependencies!
 - 🔑 **Dual Authentication (gh CLI or Personal Access Token)**:
-  - Auto-detects `gh` CLI login if available.
-  - If unauthenticated, displays an interactive step-by-step onboarding card in the UI with a direct link to generate a Personal Access Token (PAT).
+  - Auto-detects `gh` CLI login if available locally.
+  - If unauthenticated or deployed to cloud (Vercel), displays an interactive step-by-step onboarding card in the UI with a direct link to generate a Personal Access Token (PAT).
   - Terminal logs provide explicit error notices, token export commands, and a clickable PAT creation link.
-- 💾 **SQLite Local Persistence (`cache.db`)**: Stores repository metadata locally so dashboard loads instantly (< 100ms) without hitting GitHub API rate limits.
+- 💾 **SQLite Local Persistence (`cache.db`)**: Stores repository metadata locally/in `/tmp` so dashboard loads instantly (< 100ms) without hitting GitHub API rate limits.
 - ⚡ **Smart Delta Sync & Parallel Workers**: Only re-audits deep details for repos whose push date changed, using parallel multi-threaded background workers.
 - 🔍 **Interactive Filters**:
   - **Visibility**: All / Public 🌐 / Private 🔒
@@ -31,31 +33,40 @@
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Deployment Options
 
-### 1. Launch Interactive Web Dashboard
+### Option 1: 🌐 1-Click Deploy to Vercel
+Deploy the entire application as a cloud web app in seconds:
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fvineet-k09%2Fgithub-repo-curator)
+
+Once deployed, open your Vercel URL and enter your GitHub Personal Access Token (PAT) into the interactive onboarding card to manage your account from anywhere!
+
+---
+
+### Option 2: 💻 Local Web Dashboard
 ```bash
 git clone https://github.com/vineet-k09/github-repo-curator.git
 cd github-repo-curator
 
-# Launch the Web GUI
+# Launch the Web GUI locally
 make gui
 ```
 Open **http://localhost:8080** in your browser!
 
 ---
 
-### 🔑 Authentication Options
+## 🔑 Authentication Options
 
-#### Option A: GitHub CLI (`gh`)
-If you have `gh` CLI installed and authenticated:
+### A. GitHub CLI (`gh`)
+If you have `gh` CLI installed and authenticated locally:
 ```bash
 gh auth login
 make gui
 ```
 
-#### Option B: Personal Access Token (PAT)
-If you don't have `gh` CLI installed:
+### B. Personal Access Token (PAT)
+If deployed to cloud or running without `gh` CLI:
 1. Generate a token on GitHub: [Click to Create Token (pre-filled scopes)](https://github.com/settings/tokens/new?scopes=repo,delete_repo&description=GitHub-Repo-Curator)
 2. Export the token in your terminal:
    ```bash
@@ -66,7 +77,7 @@ If you don't have `gh` CLI installed:
 
 ---
 
-### 🧪 Running Tests
+## 🧪 Running Tests
 
 ```bash
 make test
