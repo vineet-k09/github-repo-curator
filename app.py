@@ -160,8 +160,18 @@ def deep_sync_single_repo(owner, name, token=None):
         print(f"Deep sync error for {name}: {e}", file=sys.stderr)
 
 def sync_surface_repos(owner, force=False, token=None):
-    repos_raw = run_github_api('/user/repos?type=all&per_page=100', token=token) or []
-    owned = [r for r in repos_raw if r['owner']['login'].lower() == owner.lower()]
+    repos_raw = []
+    page = 1
+    while True:
+        paged = run_github_api(f'/user/repos?type=all&per_page=100&page={page}', token=token) or []
+        if not paged or not isinstance(paged, list):
+            break
+        repos_raw.extend(paged)
+        if len(paged) < 100:
+            break
+        page += 1
+
+    owned = [r for r in repos_raw if isinstance(r, dict) and r.get('owner', {}).get('login', '').lower() == owner.lower()]
 
     conn = get_db()
     cursor = conn.cursor()
@@ -261,13 +271,11 @@ class CuratorAPIHandler(SimpleHTTPRequestHandler):
                 return
             
             owner = user['login']
+            sync_surface_repos(owner, force=False, token=token)
             cached = get_all_cached_repos()
 
-            if not cached:
-                sync_surface_repos(owner, force=True, token=token)
-                cached = get_all_cached_repos()
-
             self.send_json_response({'owner': owner, 'repos': cached})
+
 
         else:
             super().do_GET()

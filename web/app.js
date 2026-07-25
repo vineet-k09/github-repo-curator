@@ -183,7 +183,9 @@ document.addEventListener('DOMContentLoaded', () => {
       let reposRaw = [];
       let page = 1;
       while (true) {
-        const pageData = await ghFetch(`/user/repos?type=all&per_page=100&page=${page}`);
+        const pageData = await ghFetch(`/user/repos?type=all&per_page=100&page=${page}`, {
+          headers: { 'Cache-Control': 'no-cache' }
+        });
         if (!Array.isArray(pageData) || pageData.length === 0) break;
         reposRaw.push(...pageData);
         if (pageData.length < 100) break;
@@ -249,7 +251,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {
       console.error('Smart sync error', e);
     } finally {
-      btnRefresh.textContent = '🔄 Smart Sync';
+      btnRefresh.textContent = 'Sync';
       btnRefresh.disabled = false;
       syncInProgress = false;
     }
@@ -271,7 +273,7 @@ document.addEventListener('DOMContentLoaded', () => {
             : [];
           
           const codeFiles = files.filter(f => !['node_modules/', '.next/', 'vendor/', 'dist/', 'build/', '.git/'].some(x => f.includes(x)));
-          const srcFiles = codeFiles.filter(f => ['.py','.js','.ts','.tsx','.jsx','.java','.go','.rs','.cpp','.c','.html','.css','.gd','.php','.typ'].some(ext => f.endswith(ext)));
+          const srcFiles = codeFiles.filter(f => ['.py','.js','.ts','.tsx','.jsx','.java','.go','.rs','.cpp','.c','.html','.css','.gd','.php','.typ'].some(ext => f.endsWith(ext)));
 
           // Fetch commits
           const commits = await ghFetch(`/repos/${item.full_name}/commits?per_page=30`).catch(() => []);
